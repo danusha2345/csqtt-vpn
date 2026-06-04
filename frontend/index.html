@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>WDTT VPN</title>
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<div class="glow" aria-hidden="true"></div>
+
+<main class="app" id="app">
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark">◆</span>
+            <span class="brand-name">WDTT<span class="brand-dim">·VPN</span></span>
+        </div>
+        <div class="conn-dot" id="connDot" data-state="off"></div>
+    </header>
+
+    <section class="reactor">
+        <button class="power" id="power" type="button" data-state="off" aria-label="Подключить">
+            <span class="power-ring"></span>
+            <span class="power-core">
+                <svg viewBox="0 0 24 24" class="power-icon" aria-hidden="true">
+                    <path d="M12 3v9"/>
+                    <path d="M6.6 6.8a8 8 0 1 0 10.8 0"/>
+                </svg>
+            </span>
+        </button>
+        <div class="status" id="status">Отключено</div>
+        <div class="status-sub" id="statusSub">нажми, чтобы подключиться</div>
+    </section>
+
+    <section class="metrics" id="metrics">
+        <div class="metric">
+            <span class="metric-label">↓ приём</span>
+            <span class="metric-value" id="downRate">—</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">↑ отдача</span>
+            <span class="metric-value" id="upRate">—</span>
+        </div>
+        <div class="metric total">
+            <span class="metric-label">за сессию</span>
+            <span class="metric-value" id="totals">↓ 0 Б · ↑ 0 Б</span>
+        </div>
+    </section>
+
+    <details class="panel" id="settings">
+        <summary>Настройки<span class="chev">⌄</span></summary>
+        <div class="panel-body">
+            <label class="field">
+                <span>Профиль</span>
+                <div class="profile-row">
+                    <select id="profileSel"><option value="">— текущий —</option></select>
+                    <input id="profileName" type="text" spellcheck="false" placeholder="имя для сохранения"/>
+                    <button id="profileSave" type="button" title="Сохранить профиль">💾</button>
+                    <button id="profileDel" type="button" title="Удалить профиль">✕</button>
+                </div>
+            </label>
+            <label class="field">
+                <span>Сервер</span>
+                <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:56000"/>
+            </label>
+            <label class="field">
+                <span>Пароль туннеля</span>
+                <input id="password" type="password" spellcheck="false" placeholder="••••••••"/>
+            </label>
+            <label class="field">
+                <span>VK-ссылки <em>(по одной на строку, до 4)</em></span>
+                <textarea id="vk" rows="5" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
+            </label>
+            <div class="row">
+                <label class="field small">
+                    <span>Воркеров</span>
+                    <input id="workers" type="number" min="1" max="128" value="12"/>
+                </label>
+                <label class="toggle">
+                    <input id="systemVPN" type="checkbox"/>
+                    <span class="track"><span class="thumb"></span></span>
+                    <span class="toggle-text">Системный VPN<em>весь трафик</em></span>
+                </label>
+            </div>
+            <label class="toggle">
+                <input id="autostart" type="checkbox"/>
+                <span class="track"><span class="thumb"></span></span>
+                <span class="toggle-text">Автозапуск<em>при входе в Windows</em></span>
+            </label>
+            <label class="field">
+                <span>Исключения <em>(домены / IP / подсети мимо VPN)</em></span>
+                <textarea id="excludes" rows="3" spellcheck="false" placeholder="example.com&#10;192.168.0.0/16"></textarea>
+            </label>
+        </div>
+    </details>
+
+    <details class="panel" id="logPanel" open>
+        <summary>Журнал<span class="chev">⌄</span></summary>
+        <div class="panel-body">
+            <button class="diag-btn" id="diag" type="button">🩺 Запустить диагностику сети</button>
+            <pre class="log" id="log"></pre>
+        </div>
+    </details>
+</main>
+
+<script src="./src/main.js" type="module"></script>
+</body>
+</html>

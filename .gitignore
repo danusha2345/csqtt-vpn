@@ -1,0 +1,8 @@
+# сборочные артефакты
+/WDTT-VPN.exe
+/build/bin/
+frontend/dist/
+node_modules/
+frontend/node_modules/
+# временные
+*.log
