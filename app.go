@@ -127,7 +127,8 @@ func (a *App) Connect(s Settings) string {
 	return ""
 }
 
-// Disconnect останавливает туннель и откатывает маршруты.
+// Disconnect останавливает туннель и откатывает маршруты. Снятие маршрутов
+// занимает секунды — на это время фронту уходит статус "disconnecting".
 func (a *App) Disconnect() {
 	a.mu.Lock()
 	mgr, cancel := a.mgr, a.cancel
@@ -137,6 +138,7 @@ func (a *App) Disconnect() {
 		cancel()
 	}
 	if mgr != nil {
+		a.emitStatus("disconnecting")
 		mgr.Disconnect()
 	}
 	a.emitStatus("disconnected")

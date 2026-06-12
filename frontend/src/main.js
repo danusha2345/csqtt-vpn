@@ -65,6 +65,9 @@ function setState(state) {
         case 'connecting':
             p = d = 'connecting'; title = 'Подключение…'; subtitle = 'устанавливаю туннель · клик — отмена';
             connected = false; break;
+        case 'disconnecting':
+            p = d = 'connecting'; title = 'Отключение…'; subtitle = 'снимаю маршруты и закрываю туннель';
+            connected = false; break;
         case 'connected-vpn':
             p = d = 'connected'; title = 'Защищено'; subtitle = 'системный VPN · весь трафик';
             connected = true; break;
@@ -76,7 +79,7 @@ function setState(state) {
             $('downRate').textContent = '—'; $('upRate').textContent = '—';
             $('totals').textContent = '↓ 0 Б · ↑ 0 Б';
     }
-    stateName = (state === 'connecting') ? 'connecting' : (connected ? 'connected' : 'off');
+    stateName = (state === 'connecting' || state === 'disconnecting') ? state : (connected ? 'connected' : 'off');
     power.dataset.state = p;
     dot.dataset.state = d;
     status.textContent = title;
@@ -164,8 +167,9 @@ function wire() {
     });
 
     $('power').addEventListener('click', async () => {
+        if (stateName === 'disconnecting') return; // уже отключаемся
         // подключено ИЛИ подключается → клик отключает/отменяет
-        if (stateName !== 'off') { App().Disconnect(); return; }
+        if (stateName !== 'off') { setState('disconnecting'); App().Disconnect(); return; }
         setState('connecting');
         const c = collect();
         if (c.systemVPN) {

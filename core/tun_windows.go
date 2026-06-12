@@ -105,6 +105,17 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if ip := resolveHost(serverHost); ip != "" {
 		m.excludeHost(ip)
 	}
+	// TURN-адреса из логов клиента, замеченные до этого момента (тогда
+	// excludeHost был no-op — физический шлюз ещё не был известен).
+	m.mu.Lock()
+	turn := make([]string, 0, len(m.turnIPs))
+	for ip := range m.turnIPs {
+		turn = append(turn, ip)
+	}
+	m.mu.Unlock()
+	for _, ip := range turn {
+		m.excludeHost(ip)
+	}
 	for _, cidr := range bypassCIDRs {
 		netw, mask, e := cidrToRoute(cidr)
 		if e != nil {

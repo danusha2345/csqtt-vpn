@@ -58,7 +58,8 @@ type Manager struct {
 	mu        sync.Mutex
 	client    *exec.Cmd
 	wireproxy *exec.Cmd
-	clientIn  *os.File // stdin go_client для CAPTCHA_RESULT
+	clientIn  *os.File        // stdin go_client для CAPTCHA_RESULT
+	turnIPs   map[string]bool // TURN-IP из логов клиента — для bypass при старте маршрутизации
 	onLog     func(string)
 	onCaptcha CaptchaFunc
 
@@ -239,6 +240,10 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 // дедупликацию повторов на фронтенде.
 var clientTS = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)? `)
 
+// wgPrivate маскирует приватный ключ WG в журнале — пользователи шлют логи
+// при проблемах, ключ туда попадать не должен.
+var wgPrivate = regexp.MustCompile(`(PrivateKey\s*=\s*)\S+`)
+
 // readClient читает stdout+stderr go_client: пишет логи и обрабатывает CAPTCHA_SOLVE.
 func (m *Manager) readClient(stdout interface{ Read([]byte) (int, error) }) {
 	sc := bufio.NewScanner(stdout)
@@ -257,10 +262,18 @@ func (m *Manager) readClient(stdout interface{ Read([]byte) (int, error) }) {
 		}
 		// Динамический bypass: адреса TURN-серверов из логов go_client выводим
 		// мимо TUN (иначе при системном VPN — петля). Строки вида "turn:IP:port".
+		// Запоминаем всегда: они приходят ДО старта маршрутизации, когда
+		// excludeHost ещё no-op, — startSystemRouting добавит их повторно.
 		if ip := extractTurnIP(line); ip != "" {
+			m.mu.Lock()
+			if m.turnIPs == nil {
+				m.turnIPs = map[string]bool{}
+			}
+			m.turnIPs[ip] = true
+			m.mu.Unlock()
 			m.excludeHost(ip)
 		}
-		m.log("[client] %s", line)
+		m.log("[client] %s", wgPrivate.ReplaceAllString(line, "${1}•••"))
 	}
 }
 
