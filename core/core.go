@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,9 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// go_client пишет логи стандартным log → stderr; без этого теряются все его
+	// логи и строки с turn:IP для динамического bypass.
+	client.Stderr = client.Stdout
 	stdin, err := client.StdinPipe()
 	if err != nil {
 		return err
@@ -220,12 +224,17 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// readClient читает stdout go_client: пишет логи и обрабатывает CAPTCHA_SOLVE.
+// clientTS — префикс времени стандартного log-пакета go_client
+// ("2006/01/02 15:04:05.000000 "); в журнале GUI он только шумит и ломает
+// дедупликацию повторов на фронтенде.
+var clientTS = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)? `)
+
+// readClient читает stdout+stderr go_client: пишет логи и обрабатывает CAPTCHA_SOLVE.
 func (m *Manager) readClient(stdout interface{ Read([]byte) (int, error) }) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		line := sc.Text()
+		line := clientTS.ReplaceAllString(sc.Text(), "")
 		if strings.HasPrefix(line, "CAPTCHA_SOLVE|") {
 			parts := strings.Split(strings.TrimPrefix(line, "CAPTCHA_SOLVE|"), "|")
 			if m.onCaptcha != nil && len(parts) >= 3 {
@@ -251,12 +260,11 @@ func extractTurnIP(line string) string {
 		if i := strings.Index(line, marker); i >= 0 {
 			rest := line[i+len(marker):]
 			rest = strings.TrimLeftFunc(rest, func(r rune) bool { return r == '/' })
-			end := strings.IndexAny(rest, ":?\" ]")
-			if end > 0 {
-				cand := rest[:end]
-				if net.ParseIP(cand) != nil {
-					return cand
-				}
+			if end := strings.IndexAny(rest, ":?\" ]"); end >= 0 {
+				rest = rest[:end] // иначе IP стоит в конце строки — берём её целиком
+			}
+			if net.ParseIP(rest) != nil {
+				return rest
 			}
 		}
 	}
@@ -360,6 +368,15 @@ func (m *Manager) Running() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.wireproxy != nil
+}
+
+// SysActive сообщает, активен ли системный VPN (TUN-маршруты подняты). Может
+// быть false при успешном Connect, если системная маршрутизация не поднялась
+// и клиент остался в SOCKS5-режиме.
+func (m *Manager) SysActive() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sysActive
 }
 
 // wpInteresting отсеивает шумные DEBUG-строки wireproxy (worker started,

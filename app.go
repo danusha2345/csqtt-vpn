@@ -103,12 +103,22 @@ func (a *App) Connect(s Settings) string {
 			Server: s.Server, Password: s.Password, VKLinks: s.VKLinks,
 			Workers: s.Workers, SystemVPN: s.SystemVPN, Excludes: s.Excludes,
 		})
+		// Пользователь мог отключиться, пока шло подключение: процессы уже
+		// убиты, статус "disconnected" отправлен — не перетирать его.
+		a.mu.Lock()
+		current := a.mgr == mgr
+		a.mu.Unlock()
+		if !current {
+			return
+		}
 		if err != nil {
 			a.emitLog("Ошибка: " + err.Error())
 			a.Disconnect()
 			return
 		}
-		if s.SystemVPN {
+		// Статус по фактическому режиму: при ошибке системной маршрутизации
+		// core откатывается в SOCKS5 — не показывать "весь трафик защищён".
+		if s.SystemVPN && mgr.SysActive() {
 			a.emitStatus("connected-vpn")
 		} else {
 			a.emitStatus("connected-socks")

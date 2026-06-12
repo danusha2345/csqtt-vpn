@@ -5,7 +5,7 @@ const App = () => window.go.main.App;
 const rt = () => window.runtime;
 
 let connected = false;
-let busy = false;
+let stateName = 'off'; // off | connecting | connected
 let logLines = []; // [{line, cls, count}]
 
 function fmtBytes(n) {
@@ -63,19 +63,20 @@ function setState(state) {
     let p = 'off', d = 'off', title = 'Отключено', subtitle = 'нажми, чтобы подключиться';
     switch (state) {
         case 'connecting':
-            p = d = 'connecting'; title = 'Подключение…'; subtitle = 'устанавливаю туннель';
+            p = d = 'connecting'; title = 'Подключение…'; subtitle = 'устанавливаю туннель · клик — отмена';
             connected = false; break;
         case 'connected-vpn':
             p = d = 'connected'; title = 'Защищено'; subtitle = 'системный VPN · весь трафик';
-            connected = true; busy = false; break;
+            connected = true; break;
         case 'connected-socks':
             p = d = 'connected'; title = 'Подключено'; subtitle = 'SOCKS5 · 127.0.0.1:1080';
-            connected = true; busy = false; break;
+            connected = true; break;
         default:
-            connected = false; busy = false;
+            connected = false;
             $('downRate').textContent = '—'; $('upRate').textContent = '—';
             $('totals').textContent = '↓ 0 Б · ↑ 0 Б';
     }
+    stateName = (state === 'connecting') ? 'connecting' : (connected ? 'connected' : 'off');
     power.dataset.state = p;
     dot.dataset.state = d;
     status.textContent = title;
@@ -100,6 +101,14 @@ function renderLog() {
     log.scrollTop = log.scrollHeight; // автоскролл
 }
 
+// Батчинг рендера: при потоке логов (проблемы с подключением) перерисовка
+// на каждую строку подвешивает WebView и кнопки перестают нажиматься.
+let renderTimer = null;
+function scheduleRender() {
+    if (renderTimer) return;
+    renderTimer = setTimeout(() => { renderTimer = null; renderLog(); }, 100);
+}
+
 function appendLog(line) {
     const last = logLines[logLines.length - 1];
     if (last && last.line === line) { // дедупликация повторов
@@ -108,7 +117,7 @@ function appendLog(line) {
         logLines.push({ line, cls: classOf(line), count: 1 });
         if (logLines.length > 500) logLines = logLines.slice(-500);
     }
-    renderLog();
+    scheduleRender();
 }
 
 function escapeHtml(s) {
@@ -155,18 +164,18 @@ function wire() {
     });
 
     $('power').addEventListener('click', async () => {
-        if (busy) return;
-        if (connected) { App().Disconnect(); return; }
-        busy = true;
+        // подключено ИЛИ подключается → клик отключает/отменяет
+        if (stateName !== 'off') { App().Disconnect(); return; }
         setState('connecting');
-        try {
-            const c = collect();
-            if (c.systemVPN) {
-                const others = await App().CheckVPN();
+        const c = collect();
+        if (c.systemVPN) {
+            App().CheckVPN().then((others) => {
                 if (others && others.length) {
                     appendLog('⚠ Активны другие VPN-интерфейсы: ' + others.join(', ') + ' — при проблемах отключите их.');
                 }
-            }
+            }).catch(() => {});
+        }
+        try {
             const err = await App().Connect(c);
             if (err) { appendLog('Ошибка: ' + err); setState('disconnected'); }
         } catch (e) {
