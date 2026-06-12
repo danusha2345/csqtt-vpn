@@ -168,9 +168,10 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	}
 	m.mu.Unlock()
 	go m.readClient(stdout)
+	clientExit := m.watchExit("wdtt-client", client)
 
 	m.log("• Жду WireGuard-конфиг от сервера (до %s)…", configWait)
-	if err := m.waitFile(ctx, wgConf, client, configWait); err != nil {
+	if err := m.waitFile(ctx, wgConf, clientExit, configWait); err != nil {
 		m.stopClient()
 		return err
 	}
@@ -198,12 +199,21 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	m.mu.Lock()
 	m.wireproxy = wp
 	m.mu.Unlock()
+	wpExit := m.watchExit("wireproxy", wp)
 
 	got := m.waitHandshake(ctx, wpOut)
 	if got {
 		m.log("  ✓ WireGuard handshake получен")
 	} else {
 		m.log("  ⚠ handshake пока не подтверждён — проверь позже")
+	}
+
+	// SOCKS5 обязан слушать ДО объявления успеха и до системной маршрутизации —
+	// иначе весь трафик уйдёт в мёртвый прокси (refused-спам, нет интернета).
+	if err := m.waitSocks(ctx, socksBind, wpExit, 6*time.Second); err != nil {
+		m.stopWireproxy()
+		m.stopClient()
+		return fmt.Errorf("SOCKS5-прокси: %w", err)
 	}
 
 	if cfg.SystemVPN {
@@ -281,10 +291,32 @@ func (m *Manager) SendCaptchaResult(token string) {
 	}
 }
 
-func (m *Manager) waitFile(ctx context.Context, path string, client *exec.Cmd, timeout time.Duration) error {
+// watchExit ждёт завершения процесса (единственный вызов cmd.Wait) и сообщает
+// о неожиданной смерти в журнал — иначе упавший wireproxy/tun2socks умирает
+// молча и причину не найти. Намеренная остановка отличается тем, что процесс
+// сперва вычёркивается из полей Manager и только потом убивается.
+// Возвращает канал, закрываемый по завершении процесса.
+func (m *Manager) watchExit(name string, cmd *exec.Cmd) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		close(ch)
+		m.mu.Lock()
+		tracked := m.client == cmd || m.wireproxy == cmd || m.tun2socks == cmd
+		m.mu.Unlock()
+		if tracked {
+			msg := "код 0"
+			if err != nil {
+				msg = err.Error()
+			}
+			m.log("⚠ %s неожиданно завершился (%s)", name, msg)
+		}
+	}()
+	return ch
+}
+
+func (m *Manager) waitFile(ctx context.Context, path string, exited <-chan struct{}, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	done := make(chan error, 1)
-	go func() { done <- client.Wait() }()
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -294,12 +326,34 @@ func (m *Manager) waitFile(ctx context.Context, path string, client *exec.Cmd, t
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-done:
+		case <-exited:
 			return fmt.Errorf("wdtt-client завершился до выдачи конфига")
 		case <-tick.C:
 			if time.Now().After(deadline) {
 				return fmt.Errorf("не дождался конфига за %s", timeout)
 			}
+		}
+	}
+}
+
+// waitSocks ждёт, когда SOCKS5-порт wireproxy начнёт принимать соединения.
+func (m *Manager) waitSocks(ctx context.Context, addr string, exited <-chan struct{}, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = c.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-exited:
+			return fmt.Errorf("wireproxy завершился, SOCKS5 %s не поднялся", addr)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s не отвечает за %s", addr, timeout)
 		}
 	}
 }
@@ -360,6 +414,16 @@ func (m *Manager) stopClient() {
 	m.mu.Unlock()
 	if cl != nil && cl.Process != nil {
 		_ = cl.Process.Kill()
+	}
+}
+
+func (m *Manager) stopWireproxy() {
+	m.mu.Lock()
+	wp := m.wireproxy
+	m.wireproxy = nil
+	m.mu.Unlock()
+	if wp != nil && wp.Process != nil {
+		_ = wp.Process.Kill()
 	}
 }
 

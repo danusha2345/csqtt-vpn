@@ -3,6 +3,7 @@
 package core
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -179,19 +180,31 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	m.mu.Lock()
 	m.tun2socks = ts
 	m.mu.Unlock()
+	m.watchExit("tun2socks", ts)
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, e := tsOut.Read(buf)
-			if n > 0 {
-				s := strings.TrimSpace(string(buf[:n]))
-				if !strings.Contains(s, "unreachable") { // не спамить IPv6/мусором
-					m.log("[tun2socks] %s", s)
+		// Построчно + сводка по refused-спаму: при мёртвом SOCKS5 tun2socks
+		// сыплет тысячи одинаковых warn — они топили журнал и вешали GUI.
+		sc := bufio.NewScanner(tsOut)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		var refused int
+		var lastFlush time.Time
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.Contains(line, "unreachable"): // не спамить IPv6/мусором
+			case strings.Contains(line, socksBind+": connectex"):
+				refused++
+				if time.Since(lastFlush) > 5*time.Second {
+					m.log("⚠ [tun2socks] SOCKS5 %s недоступен — отклонено соединений: %d", socksBind, refused)
+					refused = 0
+					lastFlush = time.Now()
 				}
+			default:
+				m.log("[tun2socks] %s", line)
 			}
-			if e != nil {
-				return
-			}
+		}
+		if refused > 0 {
+			m.log("⚠ [tun2socks] SOCKS5 %s недоступен — отклонено соединений: %d", socksBind, refused)
 		}
 	}()
 
