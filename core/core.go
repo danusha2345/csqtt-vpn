@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -62,6 +63,11 @@ type Manager struct {
 	turnIPs   map[string]bool // TURN-IP из логов клиента — для bypass при старте маршрутизации
 	onLog     func(string)
 	onCaptcha CaptchaFunc
+	onDown    func() // вызывается, когда туннель выключился сам (fail-safe)
+
+	// shuttingDown=true означает намеренную остановку (Disconnect или fail-safe):
+	// супервайзер wireproxy в этом случае НЕ перезапускает процесс.
+	shuttingDown bool
 
 	// системный VPN (Windows): tun2socks + маршруты
 	tun2socks *exec.Cmd
@@ -79,6 +85,15 @@ func NewManager(binDir, runDir string, onLog func(string), onCaptcha CaptchaFunc
 		onLog = func(string) {}
 	}
 	return &Manager{binDir: binDir, runDir: runDir, onLog: onLog, onCaptcha: onCaptcha}
+}
+
+// SetOnDown регистрирует колбэк, который ядро вызывает, когда туннель выключился
+// сам (fail-safe после серии падений wireproxy) — чтобы GUI вернул кнопку в
+// «Подключить» и не показывал ложное «подключено».
+func (m *Manager) SetOnDown(f func()) {
+	m.mu.Lock()
+	m.onDown = f
+	m.mu.Unlock()
 }
 
 func (m *Manager) exe(name string) string { return filepath.Join(m.binDir, name) }
@@ -184,23 +199,11 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	}
 
 	m.log("• Запускаю wireproxy (userspace WireGuard)…")
-	wp := exec.Command(m.exe("wireproxy.exe"), "-c", wpConf)
-	wp.Dir = m.runDir
-	hideConsole(wp)
-	wpOut, err := wp.StdoutPipe()
+	wpOut, wpExit, err := m.startWireproxy(wpConf)
 	if err != nil {
-		m.stopClient()
-		return err
-	}
-	wp.Stderr = wp.Stdout
-	if err := wp.Start(); err != nil {
 		m.stopClient()
 		return fmt.Errorf("старт wireproxy: %w", err)
 	}
-	m.mu.Lock()
-	m.wireproxy = wp
-	m.mu.Unlock()
-	wpExit := m.watchExit("wireproxy", wp)
 
 	got := m.waitHandshake(ctx, wpOut)
 	if got {
@@ -216,6 +219,11 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 		m.stopClient()
 		return fmt.Errorf("SOCKS5-прокси: %w", err)
 	}
+
+	// SOCKS5 поднят — берём wireproxy под наблюдение: торрент-вал коннектов или
+	// OOM роняет его (exit status 2), а tun2socks без живого SOCKS5 превращает
+	// сеть в «чёрную дыру». Супервайзер перезапускает его на том же порту.
+	go m.superviseWireproxy(wpConf, wpExit)
 
 	if cfg.SystemVPN {
 		host := cfg.Server
@@ -328,6 +336,132 @@ func (m *Manager) watchExit(name string, cmd *exec.Cmd) <-chan struct{} {
 	return ch
 }
 
+// startWireproxy запускает один процесс wireproxy и возвращает его объединённый
+// stdout+stderr и канал завершения. Чтение логов выбирает вызывающий: первый старт
+// ждёт handshake (waitHandshake), перезапуск из супервайзера просто читает
+// (readWireproxy). Намеренную остановку не начинает запуск (shuttingDown).
+func (m *Manager) startWireproxy(wpConf string) (io.ReadCloser, <-chan struct{}, error) {
+	wp := exec.Command(m.exe("wireproxy.exe"), "-c", wpConf)
+	wp.Dir = m.runDir
+	hideConsole(wp)
+	out, err := wp.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	wp.Stderr = wp.Stdout
+	if err := wp.Start(); err != nil {
+		return nil, nil, err
+	}
+	// Проверку «не остановлены ли» и запись m.wireproxy делаем под одним замком:
+	// иначе Disconnect, прочитавший старое m.wireproxy, не убьёт только что
+	// запущенный процесс — останется сирота.
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		_ = wp.Process.Kill()
+		go func() { _ = wp.Wait() }()
+		return nil, nil, fmt.Errorf("идёт остановка")
+	}
+	m.wireproxy = wp
+	m.mu.Unlock()
+	return out, m.watchExit("wireproxy", wp), nil
+}
+
+// readWireproxy читает логи wireproxy до конца процесса. Используется для
+// перезапущенных инстансов: гарантирует, что причина падения (паника/ERROR,
+// exit status 2) попадёт в журнал, а не потеряется молча.
+func (m *Manager) readWireproxy(out io.Reader) {
+	sc := bufio.NewScanner(out)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if line := sc.Text(); wpInteresting(line) {
+			m.log("[wireproxy] %s", line)
+		}
+	}
+}
+
+// superviseWireproxy перезапускает wireproxy, если он упал НЕ по нашей команде
+// (паника под валом BitTorrent-коннектов, OOM — типичный exit status 2). SOCKS5
+// поднимается на том же 127.0.0.1:1080, поэтому tun2socks и маршруты
+// восстанавливаются сами — трогать их не нужно. Если падения идут подряд, делаем
+// fail-safe: гасим VPN и возвращаем прямой интернет, чтобы не оставить сеть
+// «чёрной дырой» (весь трафик в мёртвый прокси).
+func (m *Manager) superviseWireproxy(wpConf string, exit <-chan struct{}) {
+	const (
+		maxRestarts = 5
+		stableAfter = 60 * time.Second // прожил дольше — следующее падение это новый инцидент
+	)
+	fails := 0
+	startedAt := time.Now()
+	for {
+		<-exit
+		if m.isShuttingDown() {
+			return // Disconnect/fail-safe — это намеренная остановка
+		}
+		if time.Since(startedAt) > stableAfter {
+			fails = 0
+		}
+		fails++
+		if fails > maxRestarts {
+			m.log("⛔ wireproxy падает подряд (%d раз) — выключаю VPN и возвращаю прямой интернет", fails-1)
+			m.failSafe()
+			return
+		}
+		backoff := time.Duration(fails) * time.Second
+		m.log("↻ wireproxy упал — перезапуск %d/%d через %s…", fails, maxRestarts, backoff)
+		time.Sleep(backoff)
+		out, newExit, err := m.startWireproxy(wpConf)
+		if err != nil {
+			if m.isShuttingDown() {
+				return
+			}
+			m.log("  ⚠ не удалось перезапустить wireproxy: %v", err)
+			m.failSafe()
+			return
+		}
+		go m.readWireproxy(out)
+		if err := m.waitSocks(context.Background(), socksBind, newExit, 10*time.Second); err == nil {
+			m.log("  ✓ wireproxy восстановлен, SOCKS5 снова доступен")
+		} else {
+			m.log("  ⚠ SOCKS5 пока не отвечает после перезапуска: %v", err)
+		}
+		exit = newExit
+		startedAt = time.Now()
+	}
+}
+
+// failSafe выключает туннель, когда wireproxy не удаётся удержать: снимает
+// tun2socks и системные маршруты (возврат прямого интернета), гасит процессы и
+// сообщает GUI через onDown. Идемпотентна — повторный вход сразу выходит.
+func (m *Manager) failSafe() {
+	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		return
+	}
+	m.shuttingDown = true
+	sys := m.sysActive
+	onDown := m.onDown
+	m.mu.Unlock()
+
+	if sys {
+		m.log("• Снимаю tun2socks и системные маршруты (fail-safe)…")
+		m.stopSystemRouting()
+	}
+	m.stopWireproxy()
+	m.stopClient()
+	m.log("⛔ VPN остановлен. Прямой интернет восстановлен. Нажмите «Подключить» для повторной попытки.")
+	if onDown != nil {
+		onDown()
+	}
+}
+
+func (m *Manager) isShuttingDown() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.shuttingDown
+}
+
 func (m *Manager) waitFile(ctx context.Context, path string, exited <-chan struct{}, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	tick := time.NewTicker(500 * time.Millisecond)
@@ -406,6 +540,9 @@ func (m *Manager) waitHandshake(ctx context.Context, out interface{ Read([]byte)
 
 // Disconnect откатывает маршруты системного VPN и останавливает все процессы.
 func (m *Manager) Disconnect() {
+	m.mu.Lock()
+	m.shuttingDown = true // запретить супервайзеру перезапуск во время остановки
+	m.mu.Unlock()
 	m.stopSystemRouting() // откат маршрутов + tun2socks (no-op, если не было)
 	m.mu.Lock()
 	wp, cl := m.wireproxy, m.client

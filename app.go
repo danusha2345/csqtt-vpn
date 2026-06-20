@@ -94,6 +94,7 @@ func (a *App) Connect(s Settings) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "wdtt"), a.emitLog, nil)
+	mgr.SetOnDown(func() { a.onTunnelDown(mgr) })
 	a.mgr, a.cancel, a.connected = mgr, cancel, true
 	a.mu.Unlock()
 
@@ -148,6 +149,20 @@ func (a *App) IsConnected() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.connected
+}
+
+// onTunnelDown вызывается ядром, когда туннель выключился сам (fail-safe после
+// серии падений wireproxy). Ядро уже сняло маршруты и процессы — здесь лишь
+// синхронизируем состояние и возвращаем кнопку GUI в «Подключить».
+func (a *App) onTunnelDown(mgr *core.Manager) {
+	a.mu.Lock()
+	if a.mgr != mgr { // пользователь уже отключился/переподключился — не вмешиваемся
+		a.mu.Unlock()
+		return
+	}
+	a.mgr, a.cancel, a.connected = nil, nil, false
+	a.mu.Unlock()
+	a.emitStatus("disconnected")
 }
 
 // Diagnose выполняет сетевую диагностику и выводит её в журнал.
