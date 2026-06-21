@@ -2,7 +2,10 @@
 /WDTT-VPN.exe
 /build/bin/
 frontend/dist/
+frontend/package.json.md5
 node_modules/
 frontend/node_modules/
+# служебное
+.serena/
 # временные
 *.log
