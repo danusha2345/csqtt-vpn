@@ -72,6 +72,26 @@ func physDefault() (gw, ifIndex string, err error) {
 	return f[0], f[1], nil
 }
 
+// physDNS возвращает первый IPv4 DNS-сервер физического интерфейса (провайдерский
+// резолвер). Пусто, если определить не удалось — тогда обход резолвится через
+// dnsBypassFallback.
+func physDNS(ifIndex string) string {
+	ps := fmt.Sprintf(
+		`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses`,
+		ifIndex)
+	out, err := runHidden("powershell", "-NoProfile", "-Command", ps)
+	if err != nil {
+		return ""
+	}
+	for _, f := range strings.Fields(out) {
+		f = strings.TrimSpace(f)
+		if ip := net.ParseIP(f); ip != nil && ip.To4() != nil {
+			return f
+		}
+	}
+	return ""
+}
+
 // cidrToRoute разбивает CIDR на сеть и маску в формате route.exe.
 func cidrToRoute(cidr string) (network, mask string, err error) {
 	_, ipnet, e := net.ParseCIDR(cidr)
@@ -100,6 +120,18 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		m.routes = map[string]bool{}
 	}
 	m.mu.Unlock()
+
+	// Провайдерский DNS физ. интерфейса — через него резолвим bypass-домены, чтобы
+	// CDN отдавал узлы, близкие к сети пользователя (публичный DNS даёт чужую
+	// геолокацию → медленный CDN). Публичный резолвер выводим мимо туннеля (/32);
+	// приватный (роутер 192.168.x) и так доступен по connected-маршруту.
+	bypassDNS := physDNS(ifIndex)
+	if bypassDNS != "" {
+		m.log("• Провайдерский DNS для обхода: %s", bypassDNS)
+		if ip := net.ParseIP(bypassDNS); ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
+			m.excludeHost(bypassDNS)
+		}
+	}
 
 	// 1) Исключения для трафика wdtt-client (сервер + VK/DNS подсети) — мимо TUN.
 	if ip := resolveHost(serverHost); ip != "" {
@@ -241,7 +273,11 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	// (10.7.0.2) ТОЛЬКО если он реально поднялся; иначе fallback на 1.1.1.1
 	// (резолв через туннель), чтобы отказ прокси не убивал весь DNS → интернет.
 	dnsServer := tunAddr
-	if err := m.startDNS(tunAddr+":53", domains); err != nil {
+	bypassUpstream := ""
+	if bypassDNS != "" {
+		bypassUpstream = bypassDNS + ":53"
+	}
+	if err := m.startDNS(tunAddr+":53", domains, bypassUpstream); err != nil {
 		m.log("  ⚠ DNS-перехват не поднялся (%v): обход по доменам недоступен, DNS через туннель (1.1.1.1)", err)
 		dnsServer = dnsVPNUpstreamIP
 	}

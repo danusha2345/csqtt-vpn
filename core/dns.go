@@ -17,25 +17,41 @@ import (
 // запрос идёт МИМО VPN), и на каждый отданный A-адрес ставит /32-маршрут мимо
 // туннеля ДО того, как приложение подключится. Остальное резолвится через VPN.
 const (
-	dnsBypassUpstream = "77.88.8.8:53" // Yandex (в bypassCIDRs → мимо VPN)
+	dnsBypassFallback = "77.88.8.8:53" // Yandex (в bypassCIDRs → мимо VPN), если физ. DNS неизвестен
 	dnsVPNUpstream    = "1.1.1.1:53"   // через туннель
 	dnsVPNUpstreamIP  = "1.1.1.1"      // для netsh dnsservers (fallback)
+	dnsCacheMin       = 10 * time.Second
+	dnsCacheMax       = 300 * time.Second
 )
+
+type dnsCacheEntry struct {
+	msg    *dns.Msg
+	expiry time.Time
+}
 
 type dnsProxy struct {
 	mgr      *Manager
 	excludes []string // суффиксы доменов для обхода
+	bypassUp string   // upstream для bypass-доменов (физ./провайдерский DNS — правильная геолокация CDN)
 	udp      *dns.Server
 	tcp      *dns.Server
 	mu       sync.Mutex
+
+	cacheMu sync.Mutex
+	cache   map[string]dnsCacheEntry // ключ: qname|qtype — режет латентность повторных резолвов
 }
 
 // startDNS поднимает DNS-прокси на listenAddr (например "10.7.0.2:53").
 // Бинд СИНХРОННЫЙ с ретраями — IP TUN-адаптера может ещё применяться
 // (EADDRNOTAVAIL). Возвращает ошибку, если поднять не удалось, чтобы вызывающий
 // код не вешал DNS адаптера на мёртвый прокси.
-func (m *Manager) startDNS(listenAddr string, domains []string) error {
-	p := &dnsProxy{mgr: m, excludes: normalizeDomains(domains)}
+func (m *Manager) startDNS(listenAddr string, domains []string, bypassUpstream string) error {
+	p := &dnsProxy{
+		mgr:      m,
+		excludes: normalizeDomains(domains),
+		bypassUp: bypassUpstream,
+		cache:    map[string]dnsCacheEntry{},
+	}
 	h := dns.HandlerFunc(p.handle)
 
 	var pc net.PacketConn
@@ -106,11 +122,26 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 		_ = w.WriteMsg(m)
 		return
 	}
-	name := strings.TrimSuffix(strings.ToLower(r.Question[0].Name), ".")
+	q := r.Question[0]
+	name := strings.TrimSuffix(strings.ToLower(q.Name), ".")
 	bypass := p.match(name)
+
+	// Кэш: повторный резолв того же имени не ходит к upstream — режет латентность
+	// открытия страниц (на странице десятки поддоменов). route для bypass уже стоит
+	// с первого ответа, поэтому cache-hit безопасен.
+	key := name + "|" + dns.TypeToString[q.Qtype]
+	if cached := p.cacheGet(key); cached != nil {
+		cached.SetReply(r)
+		_ = w.WriteMsg(cached)
+		return
+	}
+
 	upstream := dnsVPNUpstream
 	if bypass {
-		upstream = dnsBypassUpstream
+		upstream = p.bypassUp // физ./провайдерский DNS → CDN отдаёт близкие узлы
+		if upstream == "" {
+			upstream = dnsBypassFallback
+		}
 	}
 
 	resp, err := dns.Exchange(r, upstream)
@@ -130,7 +161,46 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 			}
 		}
 	}
+	p.cachePut(key, resp)
 	_ = w.WriteMsg(resp)
+}
+
+// cacheGet возвращает копию закэшированного ответа (или nil, если нет/протух).
+func (p *dnsProxy) cacheGet(key string) *dns.Msg {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+	e, ok := p.cache[key]
+	if !ok {
+		return nil
+	}
+	if time.Now().After(e.expiry) {
+		delete(p.cache, key)
+		return nil
+	}
+	return e.msg.Copy()
+}
+
+// cachePut кэширует успешный непустой ответ на min(TTL ответа), зажатый в
+// [dnsCacheMin, dnsCacheMax]. Ошибки и пустые ответы не кэшируем.
+func (p *dnsProxy) cachePut(key string, resp *dns.Msg) {
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+		return
+	}
+	ttl := dnsCacheMax
+	for _, ans := range resp.Answer {
+		if t := time.Duration(ans.Header().Ttl) * time.Second; t < ttl {
+			ttl = t
+		}
+	}
+	if ttl < dnsCacheMin {
+		ttl = dnsCacheMin
+	}
+	p.cacheMu.Lock()
+	if p.cache == nil {
+		p.cache = map[string]dnsCacheEntry{}
+	}
+	p.cache[key] = dnsCacheEntry{msg: resp.Copy(), expiry: time.Now().Add(ttl)}
+	p.cacheMu.Unlock()
 }
 
 func (p *dnsProxy) match(name string) bool {
