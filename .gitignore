@@ -9,3 +9,6 @@ frontend/node_modules/
 .serena/
 # временные
 *.log
+
+# архивы-артефакты
+*.zip

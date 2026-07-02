@@ -1,8 +1,13 @@
 # WDTT VPN
 
-Десктопный VPN-клиент для WDTT — туннелирует трафик через TURN-серверы VK,
-маскируя соединение под зашифрованный медиатрафик звонка. Форк/порт
-[proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android).
+Десктопный VPN-клиент для WDTT (**Windows**, GUI на Wails) — туннелирует трафик
+через TURN-серверы VK, маскируя соединение под зашифрованный медиатрафик звонка.
+
+Использует то же Go-ядро (`wdtt-client`), что и Android-версия
+[danusha2345/proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android):
+бинарь `bin/wdtt-client.exe` собирается из её `go_client/` и включает VK Calls
+captcha-free path. Полную карту проектов семейства см. в разделе
+[Проекты семейства WDTT](#проекты-семейства-wdtt).
 
 > **Платформы:** полностью работает под **Windows**. Linux-таргет *компилируется*, но
 > системный VPN под не-Windows — заглушка (`core/tun_other.go`: `startSystemRouting`
@@ -75,3 +80,34 @@ wails build -platform linux/amd64 -tags webkit2_41
 > Альтернатива (ручная сборка .exe без wails, с готовым .syso для иконки):
 > `cd frontend && npm install && npm run build && cd .. && CGO_ENABLED=0 GOOS=windows`
 > `GOARCH=amd64 go build -tags "desktop,production" -buildvcs=false -ldflags "-H windowsgui -s -w" -o WDTT-VPN.exe .`
+
+### Сборка клиентского бинаря `bin/wdtt-client.exe`
+
+Ядро клиента берётся из соседнего репозитория
+[proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android)
+(модуль `go_client/`, требует Go 1.26+):
+
+```bash
+cd proxy-turn-vk-android/go_client
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wdtt-client.exe .
+# затем положить рядом с WDTT-VPN.exe в bin/
+```
+
+`wireproxy.exe`, `tun2socks.exe`, `wintun.dll` — готовые сторонние бинари, пересборка
+не нужна (см. `wdtt-windows-client/README.md` для источников и версий).
+
+## Проекты семейства WDTT
+
+WDTT (**W**ireGuard **o**ver **T**URN **T**unnel) — семейство клиентов с общим Go-ядром
+и общим сервером. Все они гоняют WireGuard через TURN-серверы VK-звонков.
+
+| Проект | Платформа | Роль |
+|--------|-----------|------|
+| [danusha2345/proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android) | Android | **Основной репозиторий**: приложение (APK), Go-ядро `go_client/` (общий клиент) и `server.go` (WDTT-сервер) |
+| **wdtt-vpn** (этот репозиторий) | Windows (Linux — только GUI) | Десктопный GUI на Wails |
+| `wdtt-windows-client` | Windows | Ранний CLI/лаунчер-порт; вытеснен этим проектом, оставлен как справка по helper-бинарям |
+| `wdtt-linux-client` | Linux | Рабочий Linux-GUI на Python |
+| [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) | — | Upstream-первоисточник протокола (VK TURN over DTLS) |
+
+Клиент и сервер собираются из ядра `proxy-turn-vk-android`; десктопные/CLI-обёртки
+лишь запускают этот бинарь и настраивают маршрутизацию под свою ОС.
