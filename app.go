@@ -24,6 +24,7 @@ type Settings struct {
 	Workers   int    `json:"workers"`
 	SystemVPN bool   `json:"systemVPN"`
 	Excludes  string `json:"excludes"`
+	ObfsMode  string `json:"obfsMode"`
 }
 
 // App — бэкенд Wails.
@@ -56,12 +57,15 @@ func configPath() string {
 
 // LoadSettings читает сохранённые настройки.
 func (a *App) LoadSettings() Settings {
-	s := Settings{Workers: 12}
+	s := Settings{Workers: 12, ObfsMode: "audio"}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
 	if s.Workers <= 0 {
 		s.Workers = 12
+	}
+	if s.ObfsMode != "video" {
+		s.ObfsMode = "audio"
 	}
 	return s
 }
@@ -102,7 +106,7 @@ func (a *App) Connect(s Settings) string {
 	go func() {
 		err := mgr.Connect(ctx, core.Config{
 			Server: s.Server, Password: s.Password, VKLinks: s.VKLinks,
-			Workers: s.Workers, SystemVPN: s.SystemVPN, Excludes: s.Excludes,
+			Workers: s.Workers, SystemVPN: s.SystemVPN, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
 		})
 		// Пользователь мог отключиться, пока шло подключение: процессы уже
 		// убиты, статус "disconnected" отправлен — не перетирать его.

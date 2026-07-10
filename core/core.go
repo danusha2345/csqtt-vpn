@@ -44,6 +44,14 @@ type Config struct {
 	Workers   int    // число воркеров (по умолчанию 12)
 	SystemVPN bool   // системный VPN (весь трафик через TUN), иначе только SOCKS5
 	Excludes  string // домены/IP/подсети, которые идут МИМО VPN (по строкам/запятым)
+	ObfsMode  string // audio (PT=111) или video (PT=96)
+}
+
+func normalizeObfsMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "video") {
+		return "video"
+	}
+	return "audio"
 }
 
 // CaptchaFunc вызывается, когда go_client просит решить капчу через WebView
@@ -160,6 +168,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 		"-n", fmt.Sprintf("%d", workers),
 		"-device-id", "windows-wireproxy",
 		"-captcha-mode", "auto",
+		"-obfs", normalizeObfsMode(cfg.ObfsMode),
 	)
 	client.Dir = m.runDir
 	hideConsole(client)

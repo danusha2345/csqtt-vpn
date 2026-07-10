@@ -7,6 +7,7 @@ export namespace main {
 	    workers: number;
 	    systemVPN: boolean;
 	    excludes: string;
+	    obfsMode: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -20,6 +21,7 @@ export namespace main {
 	        this.workers = source["workers"];
 	        this.systemVPN = source["systemVPN"];
 	        this.excludes = source["excludes"];
+	        this.obfsMode = source["obfsMode"];
 	    }
 	}
 

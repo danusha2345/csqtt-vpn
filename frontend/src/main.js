@@ -24,6 +24,7 @@ function collect() {
         workers: parseInt($('workers').value, 10) || 12,
         systemVPN: $('systemVPN').checked,
         excludes: $('excludes').value,
+        obfsMode: $('obfsMode').value === 'video' ? 'video' : 'audio',
     };
 }
 
@@ -34,6 +35,7 @@ function setFields(s) {
     $('workers').value = s.workers || 12;
     $('systemVPN').checked = !!s.systemVPN;
     $('excludes').value = s.excludes || '';
+    $('obfsMode').value = s.obfsMode === 'video' ? 'video' : 'audio';
 }
 
 function save() { App().SaveSettings(collect()); }
@@ -138,6 +140,7 @@ function wire() {
     ['server', 'password', 'vk', 'workers', 'excludes'].forEach((id) =>
         $(id).addEventListener('input', save));
     $('systemVPN').addEventListener('change', save);
+    $('obfsMode').addEventListener('change', save);
 
     // профили
     $('profileSel').addEventListener('change', async (e) => {

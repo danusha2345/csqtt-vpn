@@ -44,10 +44,6 @@ func (m *Manager) cleanupStale() {
 	}
 	_, _ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0")
 	_, _ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0")
-	// страховка: вернуть IPv6 на всех адаптерах (если прошлая сессия крашнула с
-	// отключённым IPv6)
-	_, _ = runHidden("powershell", "-NoProfile", "-Command",
-		"Enable-NetAdapterBinding -Name '*' -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue")
 }
 
 func runHidden(name string, args ...string) (string, error) {
@@ -300,10 +296,10 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		}
 	}
 
-	// 5) IPv6: двойная защита от утечки (у WG только IPv4).
-	//   (a) blackhole — весь IPv6 заворачиваем в TUN; tun2socks не сможет его
+	// 5) IPv6: blackhole — весь IPv6 заворачиваем в TUN; tun2socks не сможет его
 	//       проксировать → IPv6-соединения сразу падают, приложения уходят на IPv4.
-	//   (b) пытаемся отключить IPv6 на физ. адаптере (если сработает — чище).
+	// Состояние IPv6 физических адаптеров не меняем: это пользовательская/системная
+	// настройка, которую приложение не должно глобально перезаписывать.
 	if tunIdx != "" {
 		for _, p := range []string{"::/1", "8000::/1"} {
 			out, e := runHidden("netsh", "interface", "ipv6", "add", "route",
@@ -311,12 +307,6 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 			m.log("  ipv6 blackhole %s → %s", p, statusOf(e, out))
 		}
 	}
-	// Отключаем IPv6 на ВСЕХ адаптерах (по индексу не срабатывало — IPv6 оставался
-	// активным на физическом, AAAA утекал через IPv6-DNS мимо нашего прокси).
-	out6, e6 := runHidden("powershell", "-NoProfile", "-Command",
-		"Disable-NetAdapterBinding -Name '*' -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue")
-	m.log("  IPv6 отключён на всех адаптерах → %s", statusOf(e6, out6))
-
 	m.mu.Lock()
 	m.sysActive = true
 	m.mu.Unlock()
@@ -380,10 +370,6 @@ func (m *Manager) stopSystemRouting() {
 	m.sysActive = false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
-
-	// вернуть IPv6 на всех адаптерах
-	_, _ = runHidden("powershell", "-NoProfile", "-Command",
-		"Enable-NetAdapterBinding -Name '*' -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue")
 
 	for r := range routes {
 		parts := strings.SplitN(r, " mask ", 2)
