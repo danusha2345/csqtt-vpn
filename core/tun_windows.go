@@ -220,18 +220,21 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 			m.excludeHost(ex)
 		default: // домен → обход: резолв СЕЙЧАС (route на текущие IP, работает даже
 			// при DoH в браузере) + DNS-перехват для динамики/CDN.
-			domains = append(domains, ex)
-			if ips, e := net.LookupHost(ex); e == nil {
-				n := 0
-				for _, ip := range ips {
-					if p := net.ParseIP(ip); p != nil && p.To4() != nil {
-						m.excludeHost(ip)
-						n++
+			expanded := expandBypassDomain(ex)
+			domains = append(domains, expanded...)
+			for _, domain := range expanded {
+				if ips, e := net.LookupHost(domain); e == nil {
+					n := 0
+					for _, ip := range ips {
+						if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+							m.excludeHost(ip)
+							n++
+						}
 					}
+					m.log("  домен %s → %d IPv4 в обход (резолв при старте)", domain, n)
+				} else {
+					m.log("  ⚠ домен %s не разрешён сейчас: %v (сработает DNS-перехват)", domain, e)
 				}
-				m.log("  домен %s → %d IPv4 в обход (резолв при старте)", ex, n)
-			} else {
-				m.log("  ⚠ домен %s не разрешён сейчас: %v (сработает DNS-перехват)", ex, e)
 			}
 		}
 	}

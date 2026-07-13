@@ -215,12 +215,48 @@ func (p *dnsProxy) match(name string) bool {
 // напрямую, не через DNS).
 func normalizeDomains(in []string) []string {
 	var out []string
+	seen := make(map[string]bool)
 	for _, d := range in {
 		d = strings.TrimSpace(strings.ToLower(d))
 		if d == "" || strings.Contains(d, "/") || net.ParseIP(d) != nil {
 			continue
 		}
-		out = append(out, strings.TrimSuffix(d, "."))
+		for _, expanded := range expandBypassDomain(strings.TrimSuffix(d, ".")) {
+			if !seen[expanded] {
+				seen[expanded] = true
+				out = append(out, expanded)
+			}
+		}
 	}
 	return out
+}
+
+// expandBypassDomain добавляет домены ресурсов, без которых исключённый сайт
+// всё равно получается разделён между прямым выходом и VPN. Для Яндекса это
+// особенно важно: ya.ru загружает JS/captcha/телеметрию с yandex.ru,
+// yandex.net и yastatic.net; разные внешние IP приводят к captcha или пустой
+// странице. Общего безопасного способа угадать cross-domain ресурсы нет,
+// поэтому расширяем только известное семейство.
+func expandBypassDomain(domain string) []string {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	for _, root := range []string{"ya.ru", "yandex.ru", "yandex.com"} {
+		if domain == root || strings.HasSuffix(domain, "."+root) {
+			out := []string{domain}
+			for _, related := range []string{
+				"ya.ru",
+				"yandex.ru",
+				"yandex.com",
+				"yandex.net",
+				"yastatic.net",
+				"yastatic.com",
+				"yandex.st",
+			} {
+				if related != domain {
+					out = append(out, related)
+				}
+			}
+			return out
+		}
+	}
+	return []string{domain}
 }
