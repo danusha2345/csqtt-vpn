@@ -90,6 +90,20 @@ mv /tmp/rsrc_windows_amd64.syso . 2>/dev/null
 (wdtt-client.exe, wireproxy.exe, tun2socks.exe, wintun.dll). Нужен WebView2 Runtime
 (есть в Windows 10/11).
 
+### Отдельная диагностика Windows
+
+В каталоге `tools/` лежит read-only сборщик диагностики. Сначала включите WDTT VPN
+и воспроизведите проблему, затем запустите двойным кликом
+`Run-WDTT-Diagnostics.cmd`. Можно указать проблемные домены через запятую.
+
+Отчёт `WDTT-diagnostics-*.txt` сохраняется в `%TEMP%\WDTT-Diagnostics` в UTF-8;
+после проверки эта папка откроется автоматически. Скрипт создаёт отчёт сразу и
+дописывает его по ходу, а вывод самого запуска сохраняется в `launcher-latest.txt`,
+поэтому даже ранняя ошибка не теряется. В отчёт входят состояние процессов и
+локальных портов WDTT, адаптеры, IPv4/IPv6 routes, DNS, direct/SOCKS5
+HTTP-проверки и MTU. `CommandLine` процессов, пароль, WireGuard keys и полные VK
+call links намеренно не собираются.
+
 ### Linux (только GUI, без VPN-функций — см. оговорку выше)
 
 ```bash
