@@ -19,7 +19,9 @@ const (
 	tunAddr = "10.7.0.2"
 	tunMask = "255.255.255.0"
 	tunGW   = "10.7.0.1" // виртуальный шлюз в подсети TUN (tun2socks отвечает на него)
-	tunDNS  = "1.1.1.1"
+
+	nrptDisplayName = "WDTT DNS"
+	nrptComment     = "WDTT_MANAGED"
 )
 
 // bypassCIDRs — подсети VK/Mail.ru/OK и Yandex-DNS, к которым ходит wdtt-client.
@@ -42,6 +44,7 @@ func (m *Manager) cleanupStale() {
 	for _, p := range []string{"tun2socks.exe", "wireproxy.exe", "wdtt-client.exe"} {
 		_, _ = runHidden("taskkill", "/F", "/IM", p)
 	}
+	removeManagedNRPT()
 	_, _ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0")
 	_, _ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0")
 }
@@ -51,6 +54,38 @@ func runHidden(name string, args ...string) (string, error) {
 	hideConsole(cmd)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// installManagedNRPT принудительно направляет все обычные DNS-запросы Windows
+// в локальный DNS-прокси WDTT. Это не даёт Smart Multi-Homed Name Resolution
+// выбрать провайдерский IPv6 DNS, который недоступен из-за IPv6 blackhole.
+func installManagedNRPT() error {
+	ps := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+  Where-Object { $_.DisplayName -eq '%s' -or $_.Comment -eq '%s' } |
+  ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction Stop }
+$rule = Add-DnsClientNrptRule -Namespace '.' -NameServers '%s' -DisplayName '%s' -Comment '%s' -PassThru -ErrorAction Stop
+if ($null -eq $rule -or $rule.NameServers -notcontains '%s') { throw 'NRPT verification failed' }
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+`, nrptDisplayName, nrptComment, tunAddr, nrptDisplayName, nrptComment, tunAddr)
+	out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	if err != nil {
+		return fmt.Errorf("NRPT %s: %w: %s", tunAddr, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// removeManagedNRPT удаляет только правило, созданное WDTT. Вызывается и при
+// штатном отключении, и в cleanupStale после аварийного завершения приложения.
+func removeManagedNRPT() {
+	ps := fmt.Sprintf(`
+Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+  Where-Object { $_.DisplayName -eq '%s' -or $_.Comment -eq '%s' } |
+  ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+`, nrptDisplayName, nrptComment)
+	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 }
 
 // physDefault возвращает шлюз и ifIndex текущего (физического) дефолтного маршрута.
@@ -265,20 +300,24 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	_, _ = runHidden("netsh", "interface", "ipv4", "set", "interface", tunName, "metric=1")
 	time.Sleep(800 * time.Millisecond) // дать IP 10.7.0.2 примениться ДО bind DNS и маршрутов
 
-	// DNS-перехват на адресе TUN. КРИТИЧНО: вешаем DNS адаптера на наш прокси
-	// (10.7.0.2) ТОЛЬКО если он реально поднялся; иначе fallback на 1.1.1.1
-	// (резолв через туннель), чтобы отказ прокси не убивал весь DNS → интернет.
-	dnsServer := tunAddr
+	// DNS-перехват на адресе TUN. После успешного bind добавляем default NRPT-rule:
+	// иначе Windows может предпочесть провайдерский IPv6 DNS физического адаптера,
+	// а он попадает в наш IPv6 blackhole и даёт выборочные DNS timeout.
 	bypassUpstream := ""
 	if bypassDNS != "" {
 		bypassUpstream = bypassDNS + ":53"
 	}
 	if err := m.startDNS(tunAddr+":53", domains, bypassUpstream); err != nil {
-		m.log("  ⚠ DNS-перехват не поднялся (%v): обход по доменам недоступен, DNS через туннель (1.1.1.1)", err)
-		dnsServer = dnsVPNUpstreamIP
+		return fmt.Errorf("DNS-перехват: %w", err)
 	}
-	_, _ = runHidden("netsh", "interface", "ipv4", "set", "dnsservers",
-		"name="+tunName, "static", dnsServer, "primary")
+	if out, err := runHidden("netsh", "interface", "ipv4", "set", "dnsservers",
+		"name="+tunName, "static", tunAddr, "primary"); err != nil {
+		return fmt.Errorf("DNS TUN %s: %w: %s", tunAddr, err, strings.TrimSpace(out))
+	}
+	if err := installManagedNRPT(); err != nil {
+		return fmt.Errorf("DNS-policy Windows: %w", err)
+	}
+	m.log("• DNS-policy Windows: все запросы → %s", tunAddr)
 
 	// 4) split-default через TUN (0.0.0.0/1 + 128.0.0.0/1) с явной привязкой к
 	// интерфейсу TUN (IF idx) и низкой метрикой. Основной дефолт не трогаем.
@@ -361,6 +400,9 @@ func (m *Manager) excludeHost(ip string) {
 
 // stopSystemRouting откатывает все добавленные маршруты и гасит tun2socks.
 func (m *Manager) stopSystemRouting() {
+	// Сначала снимаем policy, пока локальный DNS-прокси ещё отвечает. Это также
+	// не оставляет Windows привязанной к 10.7.0.2 после отключения VPN.
+	removeManagedNRPT()
 	m.stopDNS()
 	m.mu.Lock()
 	ts := m.tun2socks

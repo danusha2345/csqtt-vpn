@@ -19,7 +19,6 @@ import (
 const (
 	dnsBypassFallback = "77.88.8.8:53" // Yandex (в bypassCIDRs → мимо VPN), если физ. DNS неизвестен
 	dnsVPNUpstream    = "1.1.1.1:53"   // через туннель
-	dnsVPNUpstreamIP  = "1.1.1.1"      // для netsh dnsservers (fallback)
 	dnsCacheMin       = 10 * time.Second
 	dnsCacheMax       = 300 * time.Second
 )
