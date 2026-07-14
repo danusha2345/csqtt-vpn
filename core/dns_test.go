@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net"
 	"reflect"
 	"testing"
 )
@@ -31,5 +32,22 @@ func TestDNSProxyMatchExpandedYandexDomain(t *testing.T) {
 	}
 	if p.match("example.com") {
 		t.Error("expanded ya.ru bypass unexpectedly matches example.com")
+	}
+}
+
+func TestProviderBypassCIDRsForYandex(t *testing.T) {
+	for _, domain := range []string{"ya.ru", "www.ya.ru", "yandex.ru", "maps.yandex.com"} {
+		cidrs := providerBypassCIDRs(domain)
+		if len(cidrs) == 0 {
+			t.Fatalf("providerBypassCIDRs(%q) returned no routes", domain)
+		}
+		for _, cidr := range cidrs {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				t.Errorf("providerBypassCIDRs(%q) contains invalid CIDR %q: %v", domain, cidr, err)
+			}
+		}
+	}
+	if got := providerBypassCIDRs("example.com"); got != nil {
+		t.Fatalf("providerBypassCIDRs(example.com) = %#v, want nil", got)
 	}
 }

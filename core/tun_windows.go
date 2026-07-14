@@ -136,6 +136,27 @@ func cidrToRoute(cidr string) (network, mask string, err error) {
 	return ipnet.IP.String(), fmt.Sprintf("%d.%d.%d.%d", m[0], m[1], m[2], m[3]), nil
 }
 
+// setBypassRoute идемпотентно привязывает маршрут к текущему физическому шлюзу.
+// После аварийного завершения непостоянный route.exe-маршрут может пережить
+// процесс: простой route add тогда падает, а старый gateway продолжает ломать
+// обход. Сначала обновляем существующий маршрут, при его отсутствии — добавляем.
+func (m *Manager) setBypassRoute(network, mask, gw string) error {
+	out, err := runHidden("route", "change", network, "mask", mask, gw, "metric", "1")
+	if err != nil {
+		out, err = runHidden("route", "add", network, "mask", mask, gw, "metric", "1")
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+	}
+	m.mu.Lock()
+	if m.routes == nil {
+		m.routes = map[string]bool{}
+	}
+	m.routes[network+" mask "+mask] = true
+	m.mu.Unlock()
+	return nil
+}
+
 // startSystemRouting поднимает системный VPN: исключения мимо TUN + tun2socks +
 // split-default через TUN. serverHost — host из -peer (IP или домен).
 func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCSV string) error {
@@ -184,18 +205,15 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		if e != nil {
 			continue
 		}
-		if out, e := runHidden("route", "add", netw, "mask", mask, gw, "metric", "1"); e != nil {
-			m.log("  ⚠ route add %s: %v %s", cidr, e, strings.TrimSpace(out))
-		} else {
-			m.mu.Lock()
-			m.routes[netw+" mask "+mask] = true
-			m.mu.Unlock()
+		if e := m.setBypassRoute(netw, mask, gw); e != nil {
+			m.log("  ⚠ route %s: %v", cidr, e)
 		}
 	}
 
 	// 1b) Пользовательские исключения. IP/подсети — сразу route мимо TUN; домены —
 	// в DNS-перехват (резолв на лету при запросе, ловит даже CDN/динамические IP).
 	var domains []string
+	providerRoutes := make(map[string]bool)
 	for _, ex := range strings.Split(excludesCSV, ",") {
 		ex = strings.TrimSpace(ex)
 		if ex == "" {
@@ -208,20 +226,32 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 				m.log("  ⚠ исключение %q: %v", ex, e)
 				continue
 			}
-			if out, e := runHidden("route", "add", netw, "mask", mask, gw, "metric", "1"); e == nil {
-				m.mu.Lock()
-				m.routes[netw+" mask "+mask] = true
-				m.mu.Unlock()
+			if e := m.setBypassRoute(netw, mask, gw); e == nil {
 				m.log("  + исключение %s", ex)
 			} else {
-				m.log("  ⚠ route add %s: %v %s", ex, e, strings.TrimSpace(out))
+				m.log("  ⚠ route %s: %v", ex, e)
 			}
 		case net.ParseIP(ex) != nil: // IP
 			m.excludeHost(ex)
 		default: // домен → обход: резолв СЕЙЧАС (route на текущие IP, работает даже
-			// при DoH в браузере) + DNS-перехват для динамики/CDN.
+			// при DoH в браузере) + стабильные сети известного провайдера +
+			// DNS-перехват для динамики/внешних CDN.
 			expanded := expandBypassDomain(ex)
 			domains = append(domains, expanded...)
+			for _, cidr := range providerBypassCIDRs(ex) {
+				if providerRoutes[cidr] {
+					continue
+				}
+				providerRoutes[cidr] = true
+				netw, mask, e := cidrToRoute(cidr)
+				if e != nil {
+					m.log("  ⚠ профиль обхода %s: %v", cidr, e)
+					continue
+				}
+				if e := m.setBypassRoute(netw, mask, gw); e != nil {
+					m.log("  ⚠ route %s: %v", cidr, e)
+				}
+			}
 			for _, domain := range expanded {
 				if ips, e := net.LookupHost(domain); e == nil {
 					n := 0
@@ -237,6 +267,9 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 				}
 			}
 		}
+	}
+	if len(providerRoutes) > 0 {
+		m.log("• Устойчивый профиль обхода: %d IPv4-подсетей", len(providerRoutes))
 	}
 
 	// 2) tun2socks: системный TUN → SOCKS5.
@@ -388,16 +421,8 @@ func (m *Manager) excludeHost(ip string) {
 	if ip == "" || gw == "" || already || !active {
 		return
 	}
-	if out, e := runHidden("route", "add", ip, "mask", "255.255.255.255", gw, "metric", "1"); e == nil {
-		m.mu.Lock()
-		if m.routes == nil {
-			m.routes = map[string]bool{}
-		}
-		m.routes[key] = true
-		m.mu.Unlock()
+	if e := m.setBypassRoute(ip, "255.255.255.255", gw); e == nil {
 		m.log("  + bypass %s", ip)
-	} else {
-		_ = out
 	}
 }
 

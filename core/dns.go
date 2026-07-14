@@ -23,6 +23,27 @@ const (
 	dnsCacheMax       = 300 * time.Second
 )
 
+// yandexBypassCIDRs — агрегированные IPv4-префиксы AS13238 (YANDEX),
+// наблюдавшиеся RIPE RIS 14 июля 2026 года. Когда пользователь исключает
+// ya.ru/yandex.*, эти сети маршрутизируются напрямую целиком: в отличие от
+// разовых /32 из DNS это не ломается при смене A-записи, TTL или browser DoH.
+var yandexBypassCIDRs = []string{
+	"5.45.192.0/18",
+	"5.255.192.0/18",
+	"37.9.64.0/18",
+	"37.140.128.0/18",
+	"77.88.0.0/18",
+	"84.252.160.0/19",
+	"87.250.224.0/19",
+	"92.255.112.0/20",
+	"93.158.128.0/18",
+	"95.108.128.0/17",
+	"141.8.128.0/18",
+	"178.154.128.0/18",
+	"185.32.187.0/24",
+	"213.180.192.0/19",
+}
+
 type dnsCacheEntry struct {
 	msg    *dns.Msg
 	expiry time.Time
@@ -259,4 +280,17 @@ func expandBypassDomain(domain string) []string {
 		}
 	}
 	return []string{domain}
+}
+
+// providerBypassCIDRs возвращает устойчивый сетевой профиль для известных
+// доменов. DNS-прокси всё равно добавляет динамические /32 для внешних CDN, но
+// основной сайт больше не зависит от того, какой IP успел разрешиться первым.
+func providerBypassCIDRs(domain string) []string {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	for _, root := range []string{"ya.ru", "yandex.ru", "yandex.com"} {
+		if domain == root || strings.HasSuffix(domain, "."+root) {
+			return yandexBypassCIDRs
+		}
+	}
+	return nil
 }
