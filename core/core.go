@@ -127,6 +127,11 @@ func (m *Manager) preflight(cfg Config, vk string) error {
 			return fmt.Errorf("не найден %s: %w", b, err)
 		}
 	}
+	if cfg.SystemVPN && !isElevated() {
+		return fmt.Errorf("системный VPN требует прав администратора: закройте приложение и " +
+			"запустите его правой кнопкой → «Запуск от имени администратора», либо снимите " +
+			"галочку «Системный VPN» и работайте через SOCKS5")
+	}
 	if !strings.Contains(cfg.Server, ":") {
 		return fmt.Errorf("адрес сервера должен быть host:port")
 	}
@@ -186,6 +191,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	if err := client.Start(); err != nil {
 		return fmt.Errorf("старт wdtt-client: %w", err)
 	}
+	attachJob(client)
 	m.mu.Lock()
 	m.client = client
 	if f, ok := stdin.(*os.File); ok {
@@ -234,6 +240,11 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	// сеть в «чёрную дыру». Супервайзер перезапускает его на том же порту.
 	go m.superviseWireproxy(wpConf, wpExit)
 
+	// Смерть wdtt-client не видна супервайзеру wireproxy: SOCKS5 остаётся открытым,
+	// просто перестаёт приходить handshake. Без отдельного наблюдения пользователь
+	// сидит с нулевым интернетом при зелёном «Защищено» до ручного отключения.
+	m.failSafeOnExit("wdtt-client", clientExit)
+
 	if cfg.SystemVPN {
 		host := cfg.Server
 		if i := strings.LastIndex(host, ":"); i >= 0 {
@@ -243,6 +254,13 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 			m.log("Ошибка системного VPN: %v — откатываю, остаюсь в SOCKS5", err)
 			m.stopSystemRouting()
 			// туннель/SOCKS5 продолжают работать
+		}
+		// Пользователь мог нажать «Отмена», пока ставились маршруты: всё, что успело
+		// подняться уже после Disconnect, снимаем. Иначе в системе остаются
+		// split-default, NRPT-правило и осиротевший tun2socks при статусе «Отключено».
+		if m.isShuttingDown() {
+			m.stopSystemRouting()
+			return context.Canceled
 		}
 		return nil
 	}
@@ -361,6 +379,7 @@ func (m *Manager) startWireproxy(wpConf string) (io.ReadCloser, <-chan struct{},
 	if err := wp.Start(); err != nil {
 		return nil, nil, err
 	}
+	attachJob(wp)
 	// Проверку «не остановлены ли» и запись m.wireproxy делаем под одним замком:
 	// иначе Disconnect, прочитавший старое m.wireproxy, не убьёт только что
 	// запущенный процесс — останется сирота.
@@ -437,6 +456,25 @@ func (m *Manager) superviseWireproxy(wpConf string, exit <-chan struct{}) {
 		exit = newExit
 		startedAt = time.Now()
 	}
+}
+
+// failSafeOnExit гасит VPN, когда сам завершился процесс, без которого туннель
+// мёртв. У wireproxy для этого есть супервайзер с перезапуском; wdtt-client и
+// tun2socks так не перезапустить (TURN-сессия и Wintun-адаптер создаются заново,
+// маршруты пришлось бы переставлять), поэтому здесь единственный честный исход —
+// вернуть прямой интернет вместо «чёрной дыры» под статусом «Защищено».
+func (m *Manager) failSafeOnExit(name string, exit <-chan struct{}) {
+	if exit == nil {
+		return
+	}
+	go func() {
+		<-exit
+		if m.isShuttingDown() {
+			return
+		}
+		m.log("⛔ %s завершился — выключаю VPN и возвращаю прямой интернет", name)
+		m.failSafe()
+	}()
 }
 
 // failSafe выключает туннель, когда wireproxy не удаётся удержать: снимает

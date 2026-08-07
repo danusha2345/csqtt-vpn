@@ -35,7 +35,13 @@ type App struct {
 	mgr       *core.Manager
 	cancel    context.CancelFunc
 	connected bool
+	done      chan struct{} // закрывается, когда горутина Connect завершилась
 }
+
+// stopTimeout — сколько ждём завершения горутины Connect при отключении. Она
+// прерывается по отмене контекста между этапами системной маршрутизации; запас
+// нужен на случай зависшего netsh/powershell.
+const stopTimeout = 20 * time.Second
 
 func NewApp() *App { return &App{} }
 
@@ -99,11 +105,13 @@ func (a *App) Connect(s Settings) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "wdtt"), a.emitLog, nil)
 	mgr.SetOnDown(func() { a.onTunnelDown(mgr) })
-	a.mgr, a.cancel, a.connected = mgr, cancel, true
+	done := make(chan struct{})
+	a.mgr, a.cancel, a.connected, a.done = mgr, cancel, true, done
 	a.mu.Unlock()
 
 	a.emitStatus("connecting")
 	go func() {
+		defer close(done)
 		err := mgr.Connect(ctx, core.Config{
 			Server: s.Server, Password: s.Password, VKLinks: s.VKLinks,
 			Workers: s.Workers, SystemVPN: s.SystemVPN, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
@@ -118,7 +126,7 @@ func (a *App) Connect(s Settings) string {
 		}
 		if err != nil {
 			a.emitLog("Ошибка: " + err.Error())
-			a.Disconnect()
+			a.stop(false) // ждать саму себя нельзя — отсюда без ожидания
 			return
 		}
 		// Статус по фактическому режиму: при ошибке системной маршрутизации
@@ -134,19 +142,45 @@ func (a *App) Connect(s Settings) string {
 
 // Disconnect останавливает туннель и откатывает маршруты. Снятие маршрутов
 // занимает секунды — на это время фронту уходит статус "disconnecting".
-func (a *App) Disconnect() {
+func (a *App) Disconnect() { a.stop(true) }
+
+// stop гасит туннель. При wait=true сначала дожидается завершения горутины
+// Connect и только потом откатывает: иначе она продолжает поднимать tun2socks,
+// DNS-прокси, NRPT-правило и split-маршруты уже ПОСЛЕ отката, и система остаётся
+// без сети и без DNS при статусе «Отключено». Из самой горутины вызывается с
+// wait=false — ждать саму себя было бы взаимной блокировкой.
+func (a *App) stop(wait bool) {
 	a.mu.Lock()
-	mgr, cancel := a.mgr, a.cancel
-	a.mgr, a.cancel, a.connected = nil, nil, false
+	mgr, cancel, done := a.mgr, a.cancel, a.done
+	a.mgr, a.cancel, a.done, a.connected = nil, nil, nil, false
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	if mgr != nil {
 		a.emitStatus("disconnecting")
+		if wait && done != nil {
+			select {
+			case <-done:
+			case <-time.After(stopTimeout):
+				a.emitLog("⚠ подключение не остановилось за " + stopTimeout.String() +
+					" — снимаю маршруты принудительно")
+			}
+		}
 		mgr.Disconnect()
 	}
 	a.emitStatus("disconnected")
+}
+
+// beforeClose гасит VPN перед закрытием окна. Без этого остаются процессы,
+// split-маршруты и NRPT-правило, а оно живёт в реестре и переживает перезагрузку:
+// Windows продолжает резолвить всё через 10.7.0.2, которого больше нет, и DNS
+// перестаёт работать во всей системе.
+func (a *App) beforeClose(ctx context.Context) bool {
+	if a.IsConnected() {
+		a.Disconnect()
+	}
+	return false
 }
 
 func (a *App) IsConnected() bool {
@@ -164,7 +198,7 @@ func (a *App) onTunnelDown(mgr *core.Manager) {
 		a.mu.Unlock()
 		return
 	}
-	a.mgr, a.cancel, a.connected = nil, nil, false
+	a.mgr, a.cancel, a.done, a.connected = nil, nil, nil, false
 	a.mu.Unlock()
 	a.emitStatus("disconnected")
 }

@@ -287,10 +287,11 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if err := ts.Start(); err != nil {
 		return fmt.Errorf("старт tun2socks: %w", err)
 	}
+	attachJob(ts)
 	m.mu.Lock()
 	m.tun2socks = ts
 	m.mu.Unlock()
-	m.watchExit("tun2socks", ts)
+	tsExit := m.watchExit("tun2socks", ts)
 	go func() {
 		// Построчно + сводка по refused-спаму: при мёртвом SOCKS5 tun2socks
 		// сыплет тысячи одинаковых warn — они топили журнал и вешали GUI.
@@ -322,6 +323,9 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if err := m.waitAdapter(ctx, tunName, 12*time.Second); err != nil {
 		return err
 	}
+	if err := m.cancelled(ctx); err != nil {
+		return err
+	}
 	idxOut, _ := runHidden("powershell", "-NoProfile", "-Command",
 		fmt.Sprintf("(Get-NetAdapter -Name '%s').ifIndex", tunName))
 	tunIdx := strings.TrimSpace(idxOut)
@@ -343,6 +347,9 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if bypassDNS != "" {
 		bypassUpstream = bypassDNS + ":53"
 	}
+	if err := m.cancelled(ctx); err != nil {
+		return err
+	}
 	if err := m.startDNS(tunAddr+":53", domains, bypassUpstream); err != nil {
 		return fmt.Errorf("DNS-перехват: %w", err)
 	}
@@ -357,6 +364,10 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 
 	// 4) split-default через TUN (0.0.0.0/1 + 128.0.0.0/1) с явной привязкой к
 	// интерфейсу TUN (IF idx) и низкой метрикой. Основной дефолт не трогаем.
+	if err := m.cancelled(ctx); err != nil {
+		return err
+	}
+	var splitOK int
 	for _, half := range [][2]string{{"0.0.0.0", "128.0.0.0"}, {"128.0.0.0", "128.0.0.0"}} {
 		args := []string{"add", half[0], "mask", half[1], tunGW, "metric", "1"}
 		if tunIdx != "" {
@@ -365,10 +376,16 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		out, e := runHidden("route", args...)
 		m.log("  route %s mask %s → %s", half[0], half[1], statusOf(e, out))
 		if e == nil {
+			splitOK++
 			m.mu.Lock()
 			m.routes[half[0]+" mask "+half[1]] = true
 			m.mu.Unlock()
 		}
+	}
+	// Без обеих половин split-default трафик идёт мимо туннеля. Молчать нельзя:
+	// иначе GUI показал бы «Защищено · весь трафик» при нулевой защите.
+	if splitOK < 2 {
+		return fmt.Errorf("маршруты через туннель не установились (%d из 2) — нужны права администратора", splitOK)
 	}
 
 	// 5) IPv6: blackhole — весь IPv6 заворачиваем в TUN; tun2socks не сможет его
@@ -385,8 +402,23 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	m.mu.Lock()
 	m.sysActive = true
 	m.mu.Unlock()
+	// Смерть tun2socks оставляет split-маршруты на несуществующем TUN: сеть пропадает
+	// мгновенно, а GUI продолжает показывать «Защищено». Гасим VPN и возвращаем
+	// прямой интернет — как при серии падений wireproxy.
+	m.failSafeOnExit("tun2socks", tsExit)
 	m.log("✅ Системный VPN активен — весь трафик через туннель")
 	return nil
+}
+
+// cancelled сообщает, что подключение больше не нужно: пользователь нажал «Отмена»
+// или отменился контекст. startSystemRouting состоит из долгих внешних вызовов
+// (powershell, netsh, route), и без таких проверок между этапами откат Disconnect
+// успевает пройти раньше, чем установка маршрутов и NRPT-правила.
+func (m *Manager) cancelled(ctx context.Context) error {
+	if m.isShuttingDown() {
+		return context.Canceled
+	}
+	return ctx.Err()
 }
 
 // waitAdapter ждёт появления Wintun-адаптера с заданным именем.

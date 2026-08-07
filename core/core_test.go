@@ -29,6 +29,31 @@ func TestExtractTurnIPAtEndOfLine(t *testing.T) {
 	}
 }
 
+// Системный VPN без прав администратора обязан падать с понятной ошибкой, а не
+// молча откатываться в SOCKS5 при зелёном статусе «Подключено». На не-Windows
+// isElevated() всегда false, поэтому проверка работает и в тестах на Linux.
+func TestPreflightSystemVPNRequiresElevation(t *testing.T) {
+	if isElevated() {
+		t.Skip("тест рассчитан на процесс без прав администратора")
+	}
+	binDir := t.TempDir()
+	for _, b := range []string{"wdtt-client.exe", "wireproxy.exe"} {
+		if err := os.WriteFile(filepath.Join(binDir, b), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := NewManager(binDir, t.TempDir(), nil, nil)
+	cfg := Config{Server: "1.2.3.4:56000", Password: "pass", SystemVPN: true}
+	err := m.preflight(cfg, "https://vk.com/call/join/x")
+	if err == nil || !strings.Contains(err.Error(), "администратора") {
+		t.Fatalf("preflight с системным VPN без прав = %v, ожидалась ошибка о правах", err)
+	}
+	cfg.SystemVPN = false // без системного VPN тот же конфиг обязан проходить
+	if err := m.preflight(cfg, "https://vk.com/call/join/x"); err != nil {
+		t.Fatalf("preflight без системного VPN = %v, ожидался успех", err)
+	}
+}
+
 func TestBuildWireproxyConf(t *testing.T) {
 	dir := t.TempDir()
 	in := filepath.Join(dir, "wg.conf")

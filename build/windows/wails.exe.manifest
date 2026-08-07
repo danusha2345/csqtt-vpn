@@ -6,6 +6,17 @@
             <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
         </dependentAssembly>
     </dependency>
+    <!-- Системный VPN ставит маршруты, DNS и NRPT-правило — всё это требует прав
+         администратора. Без этого блока `wails build` собирает exe без UAC, маршрутизация
+         молча падает и клиент откатывается в SOCKS5 при зелёном статусе «Подключено».
+         Дублируется в wails-admin.manifest для ручной сборки через rsrc/.syso. -->
+    <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+        <security>
+            <requestedPrivileges>
+                <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+            </requestedPrivileges>
+        </security>
+    </trustInfo>
     <asmv3:application>
         <asmv3:windowsSettings>
             <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware> <!-- fallback for Windows 7 and 8 -->
