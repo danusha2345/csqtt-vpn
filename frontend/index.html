@@ -5,7 +5,7 @@
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>WDTT VPN</title>
 </head>
-<body>
+<body data-state="off">
 <div class="grain" aria-hidden="true"></div>
 <div class="glow" aria-hidden="true"></div>
 
@@ -15,10 +15,15 @@
             <span class="brand-mark">◆</span>
             <span class="brand-name">WDTT<span class="brand-dim">·VPN</span></span>
         </div>
-        <div class="conn-dot" id="connDot" data-state="off"></div>
+        <div class="topbar-right">
+            <span class="uptime" id="uptime"></span>
+            <div class="conn-dot" id="connDot" data-state="off"></div>
+        </div>
     </header>
 
-    <section class="reactor">
+    <!-- Док: в «отключено» высокий и центрированный, при подключении схлопывается
+         в горизонтальную приборную полосу со статусом и трафиком. -->
+    <section class="dock" id="dock">
         <button class="power" id="power" type="button" data-state="off" aria-label="Подключить">
             <span class="power-ring"></span>
             <span class="power-core">
@@ -28,86 +33,120 @@
                 </svg>
             </span>
         </button>
-        <div class="status" id="status">Отключено</div>
-        <div class="status-sub" id="statusSub">нажми, чтобы подключиться</div>
+        <div class="dock-info">
+            <div class="status" id="status" role="status">Отключено</div>
+            <div class="status-sub" id="statusSub">нажми, чтобы подключиться</div>
+            <div class="log-tail" id="logTail" aria-hidden="true"></div>
+        </div>
+        <div class="metrics" id="metrics">
+            <div class="metric">
+                <span class="metric-label">↓ приём</span>
+                <span class="metric-value" id="downRate">—</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">↑ отдача</span>
+                <span class="metric-value" id="upRate">—</span>
+            </div>
+            <div class="metric total">
+                <span class="metric-label">за сессию</span>
+                <span class="metric-value" id="totals">↓ 0 Б · ↑ 0 Б</span>
+            </div>
+        </div>
     </section>
 
-    <section class="metrics" id="metrics">
-        <div class="metric">
-            <span class="metric-label">↓ приём</span>
-            <span class="metric-value" id="downRate">—</span>
-        </div>
-        <div class="metric">
-            <span class="metric-label">↑ отдача</span>
-            <span class="metric-value" id="upRate">—</span>
-        </div>
-        <div class="metric total">
-            <span class="metric-label">за сессию</span>
-            <span class="metric-value" id="totals">↓ 0 Б · ↑ 0 Б</span>
-        </div>
-    </section>
+    <nav class="tabs" role="tablist" aria-label="Разделы">
+        <button class="tab" type="button" role="tab" id="tabConnect" data-pane="connectPane"
+                aria-controls="connectPane" aria-selected="true">Подключение</button>
+        <button class="tab" type="button" role="tab" id="tabSettings" data-pane="settings"
+                aria-controls="settings" aria-selected="false">Настройки</button>
+        <button class="tab" type="button" role="tab" id="tabLog" data-pane="logPanel"
+                aria-controls="logPanel" aria-selected="false">Журнал</button>
+        <span class="tabs-hint" aria-hidden="true">ctrl+1…3</span>
+    </nav>
 
-    <details class="panel" id="settings">
-        <summary>Настройки<span class="chev">⌄</span></summary>
-        <div class="panel-body">
-            <label class="field">
-                <span>Профиль</span>
-                <div class="profile-row">
-                    <select id="profileSel"><option value="">— текущий —</option></select>
-                    <input id="profileName" type="text" spellcheck="false" placeholder="имя для сохранения"/>
-                    <button id="profileSave" type="button" title="Сохранить профиль">💾</button>
-                    <button id="profileDel" type="button" title="Удалить профиль">✕</button>
-                </div>
-            </label>
-            <label class="field">
-                <span>Сервер</span>
-                <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:56000"/>
-            </label>
-            <label class="field">
-                <span>Пароль туннеля</span>
-                <input id="password" type="password" spellcheck="false" placeholder="••••••••"/>
-            </label>
-            <label class="field">
-                <span>VK-ссылки <em>(по одной на строку, до 4)</em></span>
-                <textarea id="vk" rows="5" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
-            </label>
-            <div class="row">
-                <label class="field small">
-                    <span>Воркеров</span>
-                    <input id="workers" type="number" min="1" max="128" value="12"/>
+    <!-- Панели — обычные секции, а не <details>: Chromium заворачивает содержимое
+         details в анонимный ::details-content, и внутренний скролл переставал
+         ограничиваться высотой окна — панель уезжала за нижний край. -->
+    <section class="pane active" id="connectPane" role="tabpanel" aria-labelledby="tabConnect">
+        <div class="pane-body pane-split">
+            <div class="col">
+                <label class="field">
+                    <span>Профиль</span>
+                    <div class="profile-row">
+                        <select id="profileSel"><option value="">— текущий —</option></select>
+                        <input id="profileName" type="text" spellcheck="false" placeholder="имя"/>
+                        <button id="profileSave" type="button" title="Сохранить профиль">💾</button>
+                        <button id="profileDel" type="button" title="Удалить профиль">✕</button>
+                    </div>
                 </label>
-                <label class="field small">
-                    <span>Маскировка</span>
-                    <select id="obfsMode">
-                        <option value="audio">Аудио</option>
-                        <option value="video">Видео</option>
-                    </select>
+                <label class="field">
+                    <span>Сервер</span>
+                    <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:56000"/>
                 </label>
-                <label class="toggle">
-                    <input id="systemVPN" type="checkbox"/>
-                    <span class="track"><span class="thumb"></span></span>
-                    <span class="toggle-text">Системный VPN<em>весь трафик</em></span>
+                <label class="field">
+                    <span>Пароль туннеля</span>
+                    <input id="password" type="password" spellcheck="false" placeholder="••••••••"/>
                 </label>
             </div>
-            <label class="toggle">
-                <input id="autostart" type="checkbox"/>
+            <div class="col">
+                <label class="field grow">
+                    <span>VK-ссылки <em>(по одной на строку, до 4)</em></span>
+                    <textarea id="vk" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
+                </label>
+            </div>
+            <label class="toggle wide">
+                <input id="systemVPN" type="checkbox"/>
                 <span class="track"><span class="thumb"></span></span>
-                <span class="toggle-text">Автозапуск<em>при входе в Windows</em></span>
-            </label>
-            <label class="field">
-                <span>Исключения <em>(домены / IP / подсети мимо VPN)</em></span>
-                <textarea id="excludes" rows="3" spellcheck="false" placeholder="example.com&#10;192.168.0.0/16"></textarea>
+                <span class="toggle-text">Системный VPN<em>весь трафик машины через туннель</em></span>
             </label>
         </div>
-    </details>
+    </section>
 
-    <details class="panel" id="logPanel" open>
-        <summary>Журнал<span class="chev">⌄</span></summary>
-        <div class="panel-body">
-            <button class="diag-btn" id="diag" type="button">🩺 Запустить диагностику сети</button>
+    <section class="pane" id="settings" role="tabpanel" aria-labelledby="tabSettings">
+        <div class="pane-body pane-split">
+            <div class="col">
+                <div class="row">
+                    <label class="field small">
+                        <span>Воркеров</span>
+                        <input id="workers" type="number" min="9" max="108" step="9" value="18"/>
+                    </label>
+                    <label class="field">
+                        <span>Маскировка</span>
+                        <select id="obfsMode">
+                            <option value="audio">Аудио</option>
+                            <option value="video">Видео</option>
+                        </select>
+                    </label>
+                </div>
+                <p class="hint">Ядро округляет число воркеров вниз до кратного 9 (от 9 до 108).</p>
+                <label class="toggle">
+                    <input id="autostart" type="checkbox"/>
+                    <span class="track"><span class="thumb"></span></span>
+                    <span class="toggle-text">Автозапуск<em>при входе в Windows</em></span>
+                </label>
+            </div>
+            <div class="col">
+                <label class="field grow">
+                    <span>Исключения <em>(домены / IP / подсети мимо VPN)</em></span>
+                    <textarea id="excludes" spellcheck="false" placeholder="example.com&#10;192.168.0.0/16"></textarea>
+                </label>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="logPanel" role="tabpanel" aria-labelledby="tabLog">
+        <div class="pane-body">
+            <div class="log-bar">
+                <button class="ghost-btn" id="diag" type="button">🩺 Диагностика сети</button>
+                <button class="ghost-btn" id="logCopy" type="button">⧉ Копировать</button>
+                <label class="follow">
+                    <input id="logFollow" type="checkbox" checked/>
+                    <span>автоскролл</span>
+                </label>
+            </div>
             <pre class="log" id="log"></pre>
         </div>
-    </details>
+    </section>
 </main>
 
 <script src="./src/main.js" type="module"></script>

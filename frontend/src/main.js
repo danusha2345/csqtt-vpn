@@ -6,7 +6,13 @@ const rt = () => window.runtime;
 
 let connected = false;
 let stateName = 'off'; // off | connecting | connected
-let logLines = []; // [{line, cls, count}]
+let logLines = []; // [{line, cls, count, el}]
+let connectedAt = 0;
+
+const LOG_MAX = 500;
+// Панель ↔ её кнопка-вкладка. Активная помечается классом .active — переключать
+// панели нужно только через showPane().
+const PANES = { connectPane: 'tabConnect', settings: 'tabSettings', logPanel: 'tabLog' };
 
 function fmtBytes(n) {
     const f = Number(n) || 0;
@@ -16,12 +22,21 @@ function fmtBytes(n) {
     return f + ' Б';
 }
 
+// Ядро округляет -n вниз до кратного 9 и зажимает в [9, 108]: приводим значение
+// сразу, чтобы в поле не оставалось числа, которое втихую превратится в другое.
+function normalizeWorkers(v) {
+    let n = parseInt(v, 10);
+    if (!Number.isFinite(n)) n = 18;
+    n = Math.min(108, Math.max(9, n));
+    return Math.floor(n / 9) * 9;
+}
+
 function collect() {
     return {
         server: $('server').value.trim(),
         password: $('password').value.trim(),
         vkLinks: $('vk').value,
-        workers: parseInt($('workers').value, 10) || 12,
+        workers: normalizeWorkers($('workers').value),
         systemVPN: $('systemVPN').checked,
         excludes: $('excludes').value,
         obfsMode: $('obfsMode').value === 'video' ? 'video' : 'audio',
@@ -32,13 +47,19 @@ function setFields(s) {
     $('server').value = s.server || '';
     $('password').value = s.password || '';
     $('vk').value = s.vkLinks || '';
-    $('workers').value = s.workers || 12;
+    $('workers').value = normalizeWorkers(s.workers);
     $('systemVPN').checked = !!s.systemVPN;
     $('excludes').value = s.excludes || '';
     $('obfsMode').value = s.obfsMode === 'video' ? 'video' : 'audio';
 }
 
-function save() { App().SaveSettings(collect()); }
+// Настройки писались на каждое нажатие клавиши: один вызов в Go и одна запись
+// файла на символ. Копим изменения и сохраняем пачкой.
+let saveTimer = null;
+function save() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; App().SaveSettings(collect()); }, 400);
+}
 
 async function loadSettings() {
     try { setFields(await App().LoadSettings()); } catch (e) { /* до инжекта bindings */ }
@@ -57,6 +78,46 @@ async function refreshProfiles(selected) {
             sel.appendChild(o);
         }
     } catch (e) { /* ignore */ }
+}
+
+// ─── вкладки ───
+function syncTabs() {
+    for (const [paneId, tabId] of Object.entries(PANES)) {
+        $(tabId).setAttribute('aria-selected', $(paneId).classList.contains('active') ? 'true' : 'false');
+    }
+}
+
+function showPane(paneId) {
+    if (activePane() === paneId) return;
+    for (const id of Object.keys(PANES)) $(id).classList.toggle('active', id === paneId);
+    syncTabs();
+    if (paneId !== 'logPanel') return;
+    // У скрытого элемента scrollHeight = 0, поэтому автоскролл при рендере не
+    // срабатывал. Открыли журнал — показываем хвост, но уже после пересчёта
+    // раскладки, иначе scrollHeight ещё старый.
+    stickToBottom = true;
+    renderLog();
+    requestAnimationFrame(() => {
+        const log = $('log');
+        log.scrollTop = log.scrollHeight;
+    });
+}
+
+function activePane() {
+    return Object.keys(PANES).find((id) => $(id).classList.contains('active')) || 'connectPane';
+}
+
+function wirePanes() {
+    for (const [paneId, tabId] of Object.entries(PANES)) {
+        $(tabId).addEventListener('click', () => showPane(paneId));
+    }
+    window.addEventListener('keydown', (e) => {
+        if (!e.ctrlKey || e.altKey || e.shiftKey) return;
+        const idx = ['1', '2', '3'].indexOf(e.key);
+        if (idx < 0) return;
+        e.preventDefault();
+        showPane(Object.keys(PANES)[idx]);
+    });
 }
 
 function setState(state) {
@@ -87,27 +148,65 @@ function setState(state) {
     status.textContent = title;
     sub.textContent = subtitle;
     document.body.dataset.state = (p === 'connected') ? 'connected' : (p === 'connecting' ? 'connecting' : 'off');
-    power.setAttribute('aria-label', connected ? 'Отключить' : 'Подключить');
+    power.setAttribute('aria-label',
+        stateName === 'connecting' ? 'Отменить подключение' : (connected ? 'Отключить' : 'Подключить'));
+
+    if (connected) {
+        if (!connectedAt) connectedAt = Date.now();
+        // Подключились — показываем журнал, но только если пользователь не ушёл
+        // сам в настройки.
+        if (activePane() === 'connectPane') showPane('logPanel');
+    } else {
+        connectedAt = 0;
+        $('uptime').textContent = '';
+    }
+    // На disconnected вкладку НЕ переключаем: этот статус приходит и от fail-safe
+    // после серии падений wireproxy, и увести пользователя с журнала именно в этот
+    // момент — значит спрятать причину.
+}
+
+function tickUptime() {
+    if (!connectedAt) return;
+    const s = Math.floor((Date.now() - connectedAt) / 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    $('uptime').textContent = `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
 }
 
 function classOf(line) {
     if (/ошибк|error|fatal|fail|unreachable/i.test(line)) return 'err';
-    if (/warn|не удалось|повтор|retry|⚠/i.test(line)) return 'warn';
+    if (/warn|не удалось|повтор|retry|⚠|⛔/i.test(line)) return 'warn';
     if (/✅|подключено|защищено|активен|handshake получен|→ OK\b/i.test(line)) return 'ok';
     return '';
 }
 
+function lineText(l) { return l.count > 1 ? `${l.line}  ×${l.count}` : l.line; }
+
+// Липкость журнала: следим за прокруткой пользователя, а не вычисляем положение в
+// момент отрисовки. При рендере размеры ещё не пересчитаны, и «не у нижнего края»
+// ошибочно читалось как «пользователь отлистал вверх» — журнал застревал.
+let stickToBottom = true;
+
+// Журнал рисуется по одному узлу на строку и дописывается, а не собирается заново
+// через innerHTML: полная перерисовка сбрасывала выделение текста (а журнал у нас
+// в первую очередь копируют) и стоила 500 строк каждые 100 мс.
 function renderLog() {
     const log = $('log');
-    log.innerHTML = logLines.map((l) => {
-        const text = escapeHtml(l.line) + (l.count > 1 ? `  <em>×${l.count}</em>` : '');
-        return l.cls ? `<span class="${l.cls}">${text}</span>` : text;
-    }).join('\n');
-    log.scrollTop = log.scrollHeight; // автоскролл
+    if (!$('logPanel').classList.contains('active')) return; // скрытую панель не рисуем вовсе
+    const stick = $('logFollow').checked && stickToBottom;
+    for (const l of logLines) {
+        if (!l.el) {
+            l.el = document.createElement('div');
+            l.el.className = l.cls;
+            l.el.textContent = lineText(l);
+            log.appendChild(l.el);
+        } else if (l.dirty) {
+            l.el.textContent = lineText(l);
+            l.dirty = false;
+        }
+    }
+    if (stick) log.scrollTop = log.scrollHeight;
 }
 
-// Батчинг рендера: при потоке логов (проблемы с подключением) перерисовка
-// на каждую строку подвешивает WebView и кнопки перестают нажиматься.
 let renderTimer = null;
 function scheduleRender() {
     if (renderTimer) return;
@@ -118,15 +217,16 @@ function appendLog(line) {
     const last = logLines[logLines.length - 1];
     if (last && last.line === line) { // дедупликация повторов
         last.count++;
+        last.dirty = true;
     } else {
-        logLines.push({ line, cls: classOf(line), count: 1 });
-        if (logLines.length > 500) logLines = logLines.slice(-500);
+        logLines.push({ line, cls: classOf(line), count: 1, el: null, dirty: false });
+        while (logLines.length > LOG_MAX) {
+            const drop = logLines.shift();
+            if (drop.el && drop.el.parentNode) drop.el.parentNode.removeChild(drop.el);
+        }
     }
+    $('logTail').textContent = line;
     scheduleRender();
-}
-
-function escapeHtml(s) {
-    return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
 function updateTraffic(t) {
@@ -136,9 +236,35 @@ function updateTraffic(t) {
     $('totals').textContent = `↓ ${fmtBytes(t.downTotal)} · ↑ ${fmtBytes(t.upTotal)}`;
 }
 
+async function copyLog() {
+    const text = logLines.map(lineText).join('\n');
+    try {
+        await navigator.clipboard.writeText(text);
+        appendLog('Журнал скопирован в буфер обмена');
+    } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); appendLog('Журнал скопирован в буфер обмена'); }
+        catch (err) { appendLog('Не удалось скопировать журнал: ' + err); }
+        document.body.removeChild(ta);
+    }
+}
+
 function wire() {
+    // Подписки — первым делом: если ниже упадёт обработчик из-за опечатки в id,
+    // приложение хотя бы продолжит показывать статус и журнал.
+    rt().EventsOn('status', setState);
+    rt().EventsOn('log', appendLog);
+    rt().EventsOn('traffic', updateTraffic);
+
+    wirePanes();
+    setInterval(tickUptime, 1000);
+
     ['server', 'password', 'vk', 'workers', 'excludes'].forEach((id) =>
         $(id).addEventListener('input', save));
+    $('workers').addEventListener('change', () => { $('workers').value = normalizeWorkers($('workers').value); save(); });
     $('systemVPN').addEventListener('change', save);
     $('obfsMode').addEventListener('change', save);
 
@@ -146,9 +272,18 @@ function wire() {
     $('profileSel').addEventListener('change', async (e) => {
         const name = e.target.value;
         if (!name) return;
-        setFields(await App().LoadProfile(name));
-        save();
-        $('profileName').value = name;
+        try {
+            const s = await App().LoadProfile(name);
+            // Go возвращает пустые настройки и когда файл не прочитался: применить
+            // их — значит затереть текущие и тут же сохранить пустоту.
+            if (!s || (!s.server && !s.password && !s.vkLinks)) {
+                appendLog('Профиль не прочитан или пуст: ' + name);
+                return;
+            }
+            setFields(s);
+            save();
+            $('profileName').value = name;
+        } catch (err) { appendLog('Ошибка профиля: ' + err); }
     });
     $('profileSave').addEventListener('click', async () => {
         const name = ($('profileName').value || $('server').value).trim();
@@ -165,8 +300,12 @@ function wire() {
 
     // автозапуск
     $('autostart').addEventListener('change', async (e) => {
-        try { await App().SetAutoStart(e.target.checked); }
-        catch (err) { appendLog('Автозапуск: ' + err); }
+        const want = e.target.checked;
+        try { await App().SetAutoStart(want); }
+        catch (err) {
+            e.target.checked = !want; // не оставлять галочку, которая не применилась
+            appendLog('Автозапуск: ' + err);
+        }
     });
 
     $('power').addEventListener('click', async () => {
@@ -184,26 +323,40 @@ function wire() {
         }
         try {
             const err = await App().Connect(c);
-            if (err) { appendLog('Ошибка: ' + err); setState('disconnected'); }
+            if (err) {
+                appendLog('Ошибка: ' + err);
+                // «уже подключено» означает, что туннель жив: сбрасывать GUI в
+                // «Отключено» нельзя — кнопка перестанет отключать.
+                if (!/уже подключено/i.test(String(err))) setState('disconnected');
+            }
         } catch (e) {
             appendLog('Ошибка: ' + e); setState('disconnected');
         }
     });
 
     $('diag').addEventListener('click', () => {
-        $('logPanel').open = true;
+        showPane('logPanel');
         try { App().Diagnose(); } catch (e) { appendLog('Ошибка диагностики: ' + e); }
     });
-
-    rt().EventsOn('status', setState);
-    rt().EventsOn('log', appendLog);
-    rt().EventsOn('traffic', updateTraffic);
+    $('logCopy').addEventListener('click', copyLog);
+    $('logFollow').addEventListener('change', () => {
+        if (!$('logFollow').checked) return;
+        stickToBottom = true;
+        const log = $('log');
+        log.scrollTop = log.scrollHeight;
+    });
+    // Отлистал вверх — журнал перестаёт прыгать вниз на каждой новой строке;
+    // вернулся к нижнему краю — липкость включается снова.
+    $('log').addEventListener('scroll', () => {
+        const log = $('log');
+        stickToBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 6;
+    });
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
     wire();
+    syncTabs();
     await loadSettings();
     await refreshProfiles();
     try { $('autostart').checked = await App().GetAutoStart(); } catch (e) { /* ignore */ }
-    $('settings').open = true;
 });
