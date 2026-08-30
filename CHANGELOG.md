@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.7 — 2026-08-30
+
+- удалён адрес частного сервера из defaults, README и release notes;
+- endpoint собственного сервера теперь вводится пользователем явно;
+- Windows и Linux bundles добавлены в единый release `csqtt-android`.
+
 ## 2.1.6 — 2026-08-30
 
 - первый CSQTT desktop release для Windows и Linux;
@@ -10,4 +16,3 @@
 - стабильный приватный device ID на установку;
 - password и VK links передаются Rust transport через stdin, а не process argv;
 - новый CSQTT GUI, profiles, diagnostics и session traffic metrics;
-- endpoint по умолчанию: `185.245.34.224:46010`.

@@ -69,7 +69,7 @@ func configPath() string {
 
 // LoadSettings читает сохранённые настройки.
 func (a *App) LoadSettings() Settings {
-	s := Settings{Server: "185.245.34.224:46010", Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
+	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
@@ -316,7 +316,7 @@ func (a *App) SaveProfile(name string, s Settings) error {
 
 // LoadProfile загружает настройки профиля по имени.
 func (a *App) LoadProfile(name string) Settings {
-	s := Settings{Server: "185.245.34.224:46010", Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
+	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
 	data, err := os.ReadFile(filepath.Join(profilesDir(), sanitizeProfileName(name)+".json"))
 	if err == nil {
 		_ = json.Unmarshal(data, &s)

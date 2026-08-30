@@ -3,14 +3,14 @@
 [![Boosty](https://img.shields.io/badge/Boosty-Support%20development-FF7143?style=for-the-badge&logo=boosty&logoColor=white)](https://boosty.to/danusha/donate)
 
 Репозиторий desktop-клиента: [`danusha2345/csqtt-vpn`](https://github.com/danusha2345/csqtt-vpn).
-Android-клиент и сервер нашей сборки: [`danusha2345/csqtt`](https://github.com/danusha2345/csqtt).
+Android-клиент и сервер нашей сборки: [`danusha2345/csqtt-android`](https://github.com/danusha2345/csqtt-android).
 
 Десктопный клиент CSQTT для Windows и Linux. GUI на Wails управляет официальным
 Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle синхронизирована с core: **2.1.6**. Endpoint по умолчанию:
-`185.245.34.224:46010/udp`; web panel сервера: `https://185.245.34.224:46002/`.
+Версия desktop bundle синхронизирована с core: **2.1.7**. Каждый пользователь
+вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура
 

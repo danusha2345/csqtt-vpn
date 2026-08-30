@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const previewEvents = new Map();
 const previewRuntime = { EventsOn: (name, callback) => previewEvents.set(name, callback) };
 const previewSettings = {
-    server: '185.245.34.224:46010', password: '', vkLinks: '', workers: 18,
+	server: '', password: '', vkLinks: '', workers: 18,
     systemVPN: true, excludes: '', obfsMode: 'video', turnTransport: 'udp',
 };
 const previewApp = {
