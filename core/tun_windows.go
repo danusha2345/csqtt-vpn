@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +35,14 @@ func platformClientName() string { return "csqtt-client.exe" }
 func (m *Manager) platformClientArgs() []string { return []string{"--listen", innerListen} }
 
 func (m *Manager) platformPreflight() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("путь CSQTT-VPN.exe: %w", err)
+	}
+	dll := filepath.Join(filepath.Dir(executable), "wintun.dll")
+	if info, statErr := os.Stat(dll); statErr != nil || info.IsDir() {
+		return fmt.Errorf("не найден wintun.dll рядом с CSQTT-VPN.exe: %s", dll)
+	}
 	address, err := net.ResolveUDPAddr("udp", innerListen)
 	if err != nil {
 		return err
@@ -282,6 +292,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		}
 	}
 
+	m.log("• Создаю адаптер Wintun %s…", tunName)
 	bridge, err := newPacketBridge(innerListen, func(cause error) { m.bridgeFailed(cause) })
 	if err != nil {
 		return fmt.Errorf("Wintun raw bridge: %w", err)
@@ -292,6 +303,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if err := m.waitAdapter(ctx, tunName, 12*time.Second); err != nil {
 		return err
 	}
+	m.log("✓ Адаптер Wintun %s создан", tunName)
 	idxOut, _ := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf("(Get-NetAdapter -Name '%s').ifIndex", tunName))
 	tunIndex := strings.TrimSpace(idxOut)
 	if tunIndex == "" {

@@ -47,11 +47,13 @@ Windows:
 ```text
 CSQTT-VPN.exe
 bin/csqtt-client.exe
-bin/wintun.dll
+wintun.dll
 ```
 
 Нужны Windows 10/11 и WebView2 Runtime. `CSQTT-VPN.exe` содержит manifest
-`requireAdministrator`.
+`requireAdministrator`. `wintun.dll` должен находиться именно рядом с
+`CSQTT-VPN.exe`: библиотека Wintun загружается из каталога приложения, а не из
+подкаталога `bin`.
 
 Linux:
 
