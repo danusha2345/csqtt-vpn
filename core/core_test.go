@@ -36,3 +36,18 @@ func TestDecodeCommandOutputRepairsWindowsOEM866(t *testing.T) {
 		t.Fatalf("utf8=%q", got)
 	}
 }
+
+func TestRouteAlreadyExistsAcceptsEnglishAndRussianWindows(t *testing.T) {
+	for _, output := range []string{
+		"The object already exists.",
+		"Объект уже существует.",
+		"Маршрут уже существует.",
+	} {
+		if !routeAlreadyExists(output) {
+			t.Fatalf("not recognized: %q", output)
+		}
+	}
+	if routeAlreadyExists("Access is denied") {
+		t.Fatal("unrelated route error accepted")
+	}
+}

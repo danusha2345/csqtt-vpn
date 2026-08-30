@@ -24,6 +24,7 @@ const (
 	tunMTU          = 1300
 	nrptDisplayName = "CSQTT DNS"
 	nrptComment     = "CSQTT_MANAGED"
+	commandTimeout  = 15 * time.Second
 )
 
 var bypassCIDRs = []string{
@@ -164,10 +165,16 @@ func (b *packetBridge) Close() error {
 }
 
 func runHidden(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	hideConsole(cmd)
 	out, err := cmd.CombinedOutput()
-	return decodeCommandOutput(out), err
+	decoded := decodeCommandOutput(out)
+	if ctx.Err() == context.DeadlineExceeded {
+		return decoded, fmt.Errorf("%s: timeout после %s", name, commandTimeout)
+	}
+	return decoded, err
 }
 
 type packetBridgeResult struct {
@@ -258,6 +265,8 @@ func cidrToRoute(cidr string) (string, string, error) {
 }
 
 func (m *Manager) setBypassRoute(network, mask, gw string) error {
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
 	key := network + " mask " + mask
 	m.mu.Lock()
 	if m.routes[key] {
@@ -267,7 +276,7 @@ func (m *Manager) setBypassRoute(network, mask, gw string) error {
 	m.mu.Unlock()
 	out, err := runHidden("route", "add", network, "mask", mask, gw, "metric", "1")
 	if err != nil {
-		if strings.Contains(strings.ToLower(out), "object already exists") {
+		if routeAlreadyExists(out) {
 			return nil
 		}
 		return fmt.Errorf("route add: %w: %s", err, strings.TrimSpace(out))
@@ -290,6 +299,7 @@ func (m *Manager) cleanupStale() {
 }
 
 func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCSV string, assigned tunnelConfig) error {
+	m.log("• Определяю физический маршрут Windows…")
 	gw, ifIndex, err := physDefault()
 	if err != nil {
 		return err
@@ -297,6 +307,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	m.mu.Lock()
 	m.physGW, m.physIf, m.routes = gw, ifIndex, map[string]bool{}
 	m.mu.Unlock()
+	m.log("✓ Физический шлюз определён")
 	serverIP := resolveHost(serverHost)
 	if serverIP == "" {
 		return fmt.Errorf("не разрешён адрес сервера %s", serverHost)
@@ -304,6 +315,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if err := m.setBypassRoute(serverIP, "255.255.255.255", gw); err != nil {
 		return fmt.Errorf("bypass-route сервера %s: %w", serverIP, err)
 	}
+	m.log("• Добавляю bypass-маршруты сервера и TURN…")
 	for _, cidr := range bypassCIDRs {
 		network, mask, parseErr := cidrToRoute(cidr)
 		if parseErr == nil {
@@ -323,6 +335,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 			return fmt.Errorf("bypass-route TURN relay %s: %w", ip, err)
 		}
 	}
+	m.log("✓ Bypass-маршруты добавлены")
 
 	var domains []string
 	for _, raw := range strings.FieldsFunc(excludesCSV, func(r rune) bool { return r == ',' || r == '\n' }) {
@@ -386,9 +399,11 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		return err
 	}
 
+	m.routeMu.Lock()
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
 		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
 		if out, e := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps); e != nil {
+			m.routeMu.Unlock()
 			return fmt.Errorf("split route %s: %v: %s", prefix, e, out)
 		}
 	}
@@ -396,6 +411,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null`, prefix, tunIndex)
 		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
 	}
+	m.routeMu.Unlock()
 	m.mu.Lock()
 	m.sysActive = true
 	m.mu.Unlock()
@@ -467,6 +483,7 @@ func (m *Manager) stopSystemRouting() {
 	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
+	m.routeMu.Lock()
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
 		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
 		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
@@ -477,6 +494,7 @@ func (m *Manager) stopSystemRouting() {
 			_, _ = runHidden("route", "delete", parts[0], "mask", parts[1])
 		}
 	}
+	m.routeMu.Unlock()
 	if bridge != nil {
 		_ = bridge.Close()
 	}

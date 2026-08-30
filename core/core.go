@@ -50,6 +50,7 @@ type Manager struct {
 	runDir string
 
 	mu           sync.Mutex
+	routeMu      sync.Mutex
 	client       *exec.Cmd
 	clientIn     io.WriteCloser
 	bridge       bridgeController
