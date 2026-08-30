@@ -11,9 +11,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// hideConsole прячет консольное окно дочернего процесса (wdtt-client.exe,
-// wireproxy.exe, tun2socks.exe). Без этого при запуске из GUI всплывают
-// пустые окна cmd. CREATE_NO_WINDOW = 0x08000000.
+// hideConsole прячет консольное окно дочернего csqtt-client.exe.
+// CREATE_NO_WINDOW = 0x08000000.
 func hideConsole(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -28,8 +27,7 @@ var (
 
 // killJob возвращает job-объект с JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: когда GUI
 // умирает (в том числе при снятии из Task Manager), Windows сама убивает всю
-// цепочку. Без этого tun2socks переживает родителя вместе со split-маршрутами, и
-// система остаётся в туннеле, которым больше никто не управляет.
+// цепочку. Без этого transport может пережить GUI и оставить системные маршруты.
 func killJob() windows.Handle {
 	jobOnce.Do(func() {
 		h, err := windows.CreateJobObject(nil, nil)

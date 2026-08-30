@@ -1,8 +1,26 @@
 import './style.css';
 
 const $ = (id) => document.getElementById(id);
-const App = () => window.go.main.App;
-const rt = () => window.runtime;
+const previewEvents = new Map();
+const previewRuntime = { EventsOn: (name, callback) => previewEvents.set(name, callback) };
+const previewSettings = {
+    server: '185.245.34.224:46010', password: '', vkLinks: '', workers: 18,
+    systemVPN: true, excludes: '', obfsMode: 'video', turnTransport: 'udp',
+};
+const previewApp = {
+    LoadSettings: async () => previewSettings,
+    SaveSettings: async (settings) => Object.assign(previewSettings, settings),
+    ListProfiles: async () => [], GetAutoStart: async () => false,
+    SetAutoStart: async () => {}, CheckVPN: async () => [], Diagnose: async () => {},
+    Platform: async () => 'preview',
+    Connect: async () => {
+        setTimeout(() => previewEvents.get('status')?.('connected-vpn'), 700);
+        return '';
+    },
+    Disconnect: () => setTimeout(() => previewEvents.get('status')?.('disconnected'), 250),
+};
+const App = () => window.go?.main?.App || (import.meta.env.DEV ? previewApp : null);
+const rt = () => window.runtime || (import.meta.env.DEV ? previewRuntime : null);
 
 let connected = false;
 let stateName = 'off'; // off | connecting | connected
@@ -22,12 +40,12 @@ function fmtBytes(n) {
     return f + ' Б';
 }
 
-// Ядро округляет -n вниз до кратного 9 и зажимает в [9, 108]: приводим значение
+// Ядро округляет -n вниз до кратного 9 и зажимает в [9, 126]: приводим значение
 // сразу, чтобы в поле не оставалось числа, которое втихую превратится в другое.
 function normalizeWorkers(v) {
     let n = parseInt(v, 10);
     if (!Number.isFinite(n)) n = 18;
-    n = Math.min(108, Math.max(9, n));
+    n = Math.min(126, Math.max(9, n));
     return Math.floor(n / 9) * 9;
 }
 
@@ -37,9 +55,10 @@ function collect() {
         password: $('password').value.trim(),
         vkLinks: $('vk').value,
         workers: normalizeWorkers($('workers').value),
-        systemVPN: $('systemVPN').checked,
+        systemVPN: true,
         excludes: $('excludes').value,
         obfsMode: $('obfsMode').value === 'video' ? 'video' : 'audio',
+        turnTransport: $('turnTransport').value === 'tcp_tls' ? 'tcp_tls' : 'udp',
     };
 }
 
@@ -48,9 +67,9 @@ function setFields(s) {
     $('password').value = s.password || '';
     $('vk').value = s.vkLinks || '';
     $('workers').value = normalizeWorkers(s.workers);
-    $('systemVPN').checked = !!s.systemVPN;
     $('excludes').value = s.excludes || '';
     $('obfsMode').value = s.obfsMode === 'video' ? 'video' : 'audio';
+    $('turnTransport').value = s.turnTransport === 'tcp_tls' ? 'tcp_tls' : 'udp';
 }
 
 // Настройки писались на каждое нажатие клавиши: один вызов в Go и одна запись
@@ -134,9 +153,6 @@ function setState(state) {
         case 'connected-vpn':
             p = d = 'connected'; title = 'Защищено'; subtitle = 'системный VPN · весь трафик';
             connected = true; break;
-        case 'connected-socks':
-            p = d = 'connected'; title = 'Подключено'; subtitle = 'SOCKS5 · 127.0.0.1:1080';
-            connected = true; break;
         default:
             connected = false;
             $('downRate').textContent = '—'; $('upRate').textContent = '—';
@@ -161,7 +177,7 @@ function setState(state) {
         $('uptime').textContent = '';
     }
     // На disconnected вкладку НЕ переключаем: этот статус приходит и от fail-safe
-    // после серии падений wireproxy, и увести пользователя с журнала именно в этот
+    // после падения transport/TUN, и увести пользователя с журнала именно в этот
     // момент — значит спрятать причину.
 }
 
@@ -260,13 +276,17 @@ function wire() {
     rt().EventsOn('traffic', updateTraffic);
 
     wirePanes();
+	$('connectionForm').addEventListener('submit', (event) => {
+		event.preventDefault();
+		$('power').click();
+	});
     setInterval(tickUptime, 1000);
 
     ['server', 'password', 'vk', 'workers', 'excludes'].forEach((id) =>
         $(id).addEventListener('input', save));
     $('workers').addEventListener('change', () => { $('workers').value = normalizeWorkers($('workers').value); save(); });
-    $('systemVPN').addEventListener('change', save);
     $('obfsMode').addEventListener('change', save);
+    $('turnTransport').addEventListener('change', save);
 
     // профили
     $('profileSel').addEventListener('change', async (e) => {
@@ -359,4 +379,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     await refreshProfiles();
     try { $('autostart').checked = await App().GetAutoStart(); } catch (e) { /* ignore */ }
+	try {
+		const platform = await App().Platform();
+		$('platform').textContent = String(platform || 'desktop').toUpperCase();
+		if (platform === 'linux') $('autostart').closest('.toggle').hidden = true;
+	} catch (e) { /* ignore */ }
 });

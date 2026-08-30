@@ -2,29 +2,33 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"wdtt-vpn/core"
+	"csqtt-vpn/core"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Settings — конфигурация, которой обменивается фронтенд с бэкендом.
 type Settings struct {
-	Server    string `json:"server"`
-	Password  string `json:"password"`
-	VKLinks   string `json:"vkLinks"`
-	Workers   int    `json:"workers"`
-	SystemVPN bool   `json:"systemVPN"`
-	Excludes  string `json:"excludes"`
-	ObfsMode  string `json:"obfsMode"`
+	Server        string `json:"server"`
+	Password      string `json:"password"`
+	VKLinks       string `json:"vkLinks"`
+	Workers       int    `json:"workers"`
+	SystemVPN     bool   `json:"systemVPN"`
+	Excludes      string `json:"excludes"`
+	ObfsMode      string `json:"obfsMode"`
+	TurnTransport string `json:"turnTransport"`
 }
 
 // App — бэкенд Wails.
@@ -45,6 +49,8 @@ const stopTimeout = 20 * time.Second
 
 func NewApp() *App { return &App{} }
 
+func (a *App) Platform() string { return goruntime.GOOS }
+
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.trafficLoop()
@@ -58,38 +64,65 @@ func configPath() string {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "wdtt", "config.json")
+	return filepath.Join(dir, "csqtt", "config.json")
 }
 
 // LoadSettings читает сохранённые настройки.
 func (a *App) LoadSettings() Settings {
-	s := Settings{Workers: 12, ObfsMode: "audio"}
+	s := Settings{Server: "185.245.34.224:46010", Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
 	if s.Workers <= 0 {
-		s.Workers = 12
+		s.Workers = 18
 	}
 	if s.ObfsMode != "video" {
 		s.ObfsMode = "audio"
 	}
+	if s.TurnTransport != "tcp_tls" {
+		s.TurnTransport = "udp"
+	}
+	s.SystemVPN = true
 	return s
 }
 
 // SaveSettings сохраняет настройки (вызывается фронтендом при изменении).
 func (a *App) SaveSettings(s Settings) {
 	p := configPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
 	if data, err := json.MarshalIndent(s, "", "  "); err == nil {
 		_ = os.WriteFile(p, data, 0o600)
 	}
 }
 
+func loadOrCreateDeviceID() (string, error) {
+	path := filepath.Join(filepath.Dir(configPath()), "device-id")
+	if data, err := os.ReadFile(path); err == nil {
+		if value := strings.TrimSpace(string(data)); len(value) == 32 {
+			return value, nil
+		}
+	}
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("генерация device ID: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	encoded := hex.EncodeToString(value)
+	if err := os.WriteFile(path, []byte(encoded+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return encoded, nil
+}
+
 func binDir() string {
 	exe, _ := os.Executable()
 	dir := filepath.Dir(exe)
-	if _, err := os.Stat(filepath.Join(dir, "bin", "wdtt-client.exe")); err == nil {
-		return filepath.Join(dir, "bin")
+	for _, name := range []string{"csqtt-client.exe", "csqtt-client"} {
+		if _, err := os.Stat(filepath.Join(dir, "bin", name)); err == nil {
+			return filepath.Join(dir, "bin")
+		}
 	}
 	return dir
 }
@@ -97,13 +130,17 @@ func binDir() string {
 // Connect запускает туннель. Возвращает "" при успешном старте или текст ошибки.
 func (a *App) Connect(s Settings) string {
 	a.SaveSettings(s)
+	deviceID, err := loadOrCreateDeviceID()
+	if err != nil {
+		return err.Error()
+	}
 	a.mu.Lock()
 	if a.connected {
 		a.mu.Unlock()
 		return "уже подключено"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "wdtt"), a.emitLog, nil)
+	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "csqtt"), a.emitLog, nil)
 	mgr.SetOnDown(func() { a.onTunnelDown(mgr) })
 	done := make(chan struct{})
 	a.mgr, a.cancel, a.connected, a.done = mgr, cancel, true, done
@@ -114,7 +151,9 @@ func (a *App) Connect(s Settings) string {
 		defer close(done)
 		err := mgr.Connect(ctx, core.Config{
 			Server: s.Server, Password: s.Password, VKLinks: s.VKLinks,
-			Workers: s.Workers, SystemVPN: s.SystemVPN, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
+			Workers: s.Workers, SystemVPN: true, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
+			TurnTransport: s.TurnTransport,
+			DeviceID:      deviceID,
 		})
 		// Пользователь мог отключиться, пока шло подключение: процессы уже
 		// убиты, статус "disconnected" отправлен — не перетирать его.
@@ -129,12 +168,10 @@ func (a *App) Connect(s Settings) string {
 			a.stop(false) // ждать саму себя нельзя — отсюда без ожидания
 			return
 		}
-		// Статус по фактическому режиму: при ошибке системной маршрутизации
-		// core откатывается в SOCKS5 — не показывать "весь трафик защищён".
-		if s.SystemVPN && mgr.SysActive() {
+		if mgr.SysActive() {
 			a.emitStatus("connected-vpn")
 		} else {
-			a.emitStatus("connected-socks")
+			a.emitStatus("disconnected")
 		}
 	}()
 	return ""
@@ -145,7 +182,7 @@ func (a *App) Connect(s Settings) string {
 func (a *App) Disconnect() { a.stop(true) }
 
 // stop гасит туннель. При wait=true сначала дожидается завершения горутины
-// Connect и только потом откатывает: иначе она продолжает поднимать tun2socks,
+// Connect и только потом откатывает: иначе она продолжает поднимать TUN,
 // DNS-прокси, NRPT-правило и split-маршруты уже ПОСЛЕ отката, и система остаётся
 // без сети и без DNS при статусе «Отключено». Из самой горутины вызывается с
 // wait=false — ждать саму себя было бы взаимной блокировкой.
@@ -174,7 +211,7 @@ func (a *App) stop(wait bool) {
 
 // beforeClose гасит VPN перед закрытием окна. Без этого остаются процессы,
 // split-маршруты и NRPT-правило, а оно живёт в реестре и переживает перезагрузку:
-// Windows продолжает резолвить всё через 10.7.0.2, которого больше нет, и DNS
+// Windows продолжает резолвить всё через уже удалённый TUN IP, и DNS
 // перестаёт работать во всей системе.
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.IsConnected() {
@@ -190,7 +227,7 @@ func (a *App) IsConnected() bool {
 }
 
 // onTunnelDown вызывается ядром, когда туннель выключился сам (fail-safe после
-// серии падений wireproxy). Ядро уже сняло маршруты и процессы — здесь лишь
+// падения transport/TUN. Ядро уже сняло маршруты и процессы — здесь лишь
 // синхронизируем состояние и возвращаем кнопку GUI в «Подключить».
 func (a *App) onTunnelDown(mgr *core.Manager) {
 	a.mu.Lock()
@@ -225,7 +262,7 @@ func (a *App) CheckVPN() []string {
 			continue
 		}
 		n := strings.ToLower(iface.Name)
-		if strings.Contains(n, "wdtt") {
+		if strings.Contains(n, "csqtt") {
 			continue // наш собственный TUN
 		}
 		for _, p := range []string{"tun", "tap", "wg", "ppp", "nordlynx", "proton", "utun", "ipsec", "wireguard"} {
@@ -243,7 +280,7 @@ func profilesDir() string {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "wdtt", "profiles")
+	return filepath.Join(dir, "csqtt", "profiles")
 }
 
 // ListProfiles возвращает имена сохранённых профилей.
@@ -267,7 +304,7 @@ func (a *App) SaveProfile(name string, s Settings) error {
 	if name == "" {
 		return fmt.Errorf("пустое имя профиля")
 	}
-	if err := os.MkdirAll(profilesDir(), 0o755); err != nil {
+	if err := os.MkdirAll(profilesDir(), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -279,13 +316,13 @@ func (a *App) SaveProfile(name string, s Settings) error {
 
 // LoadProfile загружает настройки профиля по имени.
 func (a *App) LoadProfile(name string) Settings {
-	s := Settings{Workers: 12}
+	s := Settings{Server: "185.245.34.224:46010", Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
 	data, err := os.ReadFile(filepath.Join(profilesDir(), sanitizeProfileName(name)+".json"))
 	if err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
 	if s.Workers <= 0 {
-		s.Workers = 12
+		s.Workers = 18
 	}
 	return s
 }

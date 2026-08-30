@@ -8,6 +8,7 @@ export namespace main {
 	    systemVPN: boolean;
 	    excludes: string;
 	    obfsMode: string;
+	    turnTransport: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -22,6 +23,7 @@ export namespace main {
 	        this.systemVPN = source["systemVPN"];
 	        this.excludes = source["excludes"];
 	        this.obfsMode = source["obfsMode"];
+	        this.turnTransport = source["turnTransport"];
 	    }
 	}
 

@@ -1,10 +1,12 @@
 # сборочные артефакты
-/WDTT-VPN.exe
+/CSQTT-VPN.exe
 /build/bin/
 frontend/dist/
 frontend/package.json.md5
 node_modules/
 frontend/node_modules/
+/output/
+/.playwright-cli/
 # служебное
 .serena/
 # временные

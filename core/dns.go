@@ -61,7 +61,7 @@ type dnsProxy struct {
 	cache   map[string]dnsCacheEntry // ключ: qname|qtype — режет латентность повторных резолвов
 }
 
-// startDNS поднимает DNS-прокси на listenAddr (например "10.7.0.2:53").
+// startDNS поднимает DNS-прокси на listenAddr внутри CSQTT TUN.
 // Бинд СИНХРОННЫЙ с ретраями — IP TUN-адаптера может ещё применяться
 // (EADDRNOTAVAIL). Возвращает ошибку, если поднять не удалось, чтобы вызывающий
 // код не вешал DNS адаптера на мёртвый прокси.

@@ -1,17 +1,17 @@
-/* WDTT VPN — «инженерный тёмный терминал».
+/* CSQTT VPN — «инженерный тёмный терминал».
    Шрифты только системные: приложение офлайновое, а @import с fonts.googleapis.com
    в лучшем случае молча не грузился (и тогда UI и так рисовался Segoe UI), в худшем —
    блокировал первую отрисовку и светил запрос в сеть до подключения туннеля. */
 :root {
     --bg:        #0b0d12;
     --bg-2:      #11141c;
-    --surface:   #161a24;
-    --surface-2: #1c2230;
-    --line:      #262d3d;
+    --surface:   #151a25;
+    --surface-2: #1b2231;
+    --line:      #2b3448;
     --text:      #e7ecf3;
-    --text-dim:  #8b93a7;
-    --text-mute: #5b6478;
-    --accent:    #34e0a1;  /* защищён */
+    --text-dim:  #a5aec1;
+    --text-mute: #737e96;
+    --accent:    #37e6b0;  /* защищён */
     --accent-2:  #1f8f66;
     --warn:      #f5b14c;  /* подключение */
     --off:       #4a5266;  /* отключён */
@@ -69,10 +69,18 @@ body[data-state="connecting"] .glow {
 /* ─── шапка ─── */
 .topbar { display: flex; align-items: center; justify-content: space-between; }
 .brand { display: flex; align-items: center; gap: 9px; }
-.brand-mark { color: var(--accent); font-size: 12px; }
+.brand-mark { position: relative; display: flex; align-items: center; gap: 3px; width: 27px; }
+.brand-mark::before { content: ''; position: absolute; left: 1px; right: 1px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-2), transparent); }
+.brand-mark i { position: relative; width: 5px; height: 5px; border: 1px solid var(--accent-2);
+    background: var(--bg); transform: rotate(45deg); }
+.brand-mark i:nth-child(2) { width: 7px; height: 7px; background: var(--accent);
+    border-color: var(--accent); box-shadow: 0 0 9px rgba(55,230,176,.4); }
 .brand-name { font-weight: 700; letter-spacing: .14em; font-size: 14px; }
 .brand-dim { color: var(--text-mute); font-weight: 600; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
+.platform { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; color: var(--text-mute);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 7px; }
 .uptime { font-family: var(--mono); font-size: 11px; color: var(--text-mute);
     font-variant-numeric: tabular-nums; }
 .conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off);
@@ -83,11 +91,18 @@ body[data-state="connecting"] .glow {
 
 /* ─── док ─── */
 .dock {
+	position: relative; overflow: hidden;
     display: grid; grid-template-columns: auto; justify-items: center;
     align-content: center; gap: 8px; padding: 6px 0;
     background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
     transition: padding .35s ease;
 }
+.dock::before, .dock::after { content: ''; position: absolute; top: calc(50% - 1px); height: 1px;
+    width: calc(50% - var(--pw) / 2 - 22px); opacity: .55; pointer-events: none; }
+.dock::before { left: 0; background: linear-gradient(90deg, transparent, var(--line)); }
+.dock::after { right: 0; background: linear-gradient(90deg, var(--line), transparent); }
+body[data-state="connected"] .dock::before, body[data-state="connected"] .dock::after,
+body[data-state="connecting"] .dock::before, body[data-state="connecting"] .dock::after { display: none; }
 /* max-width обязателен: при justify-items ширина считается по содержимому, и одна
    длинная строка журнала растягивала блок за границы дока. */
 .dock-info { text-align: center; min-width: 0; max-width: 100%; overflow: hidden; }
@@ -205,7 +220,7 @@ body[data-state="connected"] .metrics {
 /* ─── поля ─── */
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field.grow { flex: 1; min-height: 0; }
-.field > span { font-size: 11.5px; color: var(--text-dim); letter-spacing: .03em; }
+.field > span { font-size: 12px; color: var(--text-dim); letter-spacing: .025em; }
 .field > span em { color: var(--text-mute); font-style: normal; font-size: 10.5px; }
 .field input, .field textarea, .field select {
     width: 100%; background: var(--bg-2); border: 1px solid var(--line);
@@ -242,6 +257,14 @@ body[data-state="connected"] .metrics {
 .toggle-text { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column;
     line-height: 1.3; min-width: 0; }
 .toggle-text em { font-style: normal; font-size: 10px; color: var(--text-mute); }
+
+.tunnel-mode { display: flex; align-items: center; gap: 10px; color: var(--text-dim); }
+.tunnel-mode > svg { width: 26px; height: 26px; padding: 5px; flex: none;
+    fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round;
+    stroke-linejoin: round; border: 1px solid var(--accent-2); border-radius: 8px;
+    background: rgba(55,230,176,.08); }
+.tunnel-mode > span { display: flex; flex-direction: column; font-size: 12px; line-height: 1.35; }
+.tunnel-mode em { color: var(--text-mute); font-size: 10px; font-style: normal; }
 
 /* ─── журнал ─── */
 .log-bar { display: flex; align-items: center; gap: 8px; flex: none; }
@@ -287,6 +310,8 @@ body[data-state="connected"] .metrics {
     border: 1px solid var(--line); border-radius: 9px; cursor: pointer; font-size: 13px;
     transition: border-color .2s, color .2s;
 }
+.profile-row button svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .profile-row button:hover { border-color: var(--accent-2); color: var(--accent); }
 .profile-row button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

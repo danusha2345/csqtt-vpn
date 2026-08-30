@@ -22,6 +22,8 @@ export function LoadProfile(arg1:string):Promise<main.Settings>;
 
 export function LoadSettings():Promise<main.Settings>;
 
+export function Platform():Promise<string>;
+
 export function SaveProfile(arg1:string,arg2:main.Settings):Promise<void>;
 
 export function SaveSettings(arg1:main.Settings):Promise<void>;

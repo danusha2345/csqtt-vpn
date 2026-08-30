@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>WDTT VPN</title>
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2337e6b0' d='m12 2 10 10-10 10L2 12z'/%3E%3C/svg%3E"/>
+    <title>CSQTT VPN</title>
 </head>
 <body data-state="off">
 <div class="grain" aria-hidden="true"></div>
@@ -12,10 +13,11 @@
 <main class="app" id="app">
     <header class="topbar">
         <div class="brand">
-            <span class="brand-mark">◆</span>
-            <span class="brand-name">WDTT<span class="brand-dim">·VPN</span></span>
+			<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="brand-name">CSQTT<span class="brand-dim">·VPN</span></span>
         </div>
         <div class="topbar-right">
+			<span class="platform" id="platform">DESKTOP</span>
             <span class="uptime" id="uptime"></span>
             <div class="conn-dot" id="connDot" data-state="off"></div>
         </div>
@@ -68,38 +70,41 @@
          details в анонимный ::details-content, и внутренний скролл переставал
          ограничиваться высотой окна — панель уезжала за нижний край. -->
     <section class="pane active" id="connectPane" role="tabpanel" aria-labelledby="tabConnect">
-        <div class="pane-body pane-split">
+		<form class="pane-body pane-split" id="connectionForm">
             <div class="col">
                 <label class="field">
                     <span>Профиль</span>
                     <div class="profile-row">
                         <select id="profileSel"><option value="">— текущий —</option></select>
                         <input id="profileName" type="text" spellcheck="false" placeholder="имя"/>
-                        <button id="profileSave" type="button" title="Сохранить профиль">💾</button>
-                        <button id="profileDel" type="button" title="Удалить профиль">✕</button>
+						<button id="profileSave" type="button" title="Сохранить профиль" aria-label="Сохранить профиль">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5zM8 4v6h8V4M8 20v-6h8v6"/></svg>
+						</button>
+						<button id="profileDel" type="button" title="Удалить профиль" aria-label="Удалить профиль">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3M8 7l1 13h6l1-13M10 10v7M14 10v7"/></svg>
+						</button>
                     </div>
                 </label>
                 <label class="field">
                     <span>Сервер</span>
-                    <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:56000"/>
+                    <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:46010"/>
                 </label>
                 <label class="field">
                     <span>Пароль туннеля</span>
-                    <input id="password" type="password" spellcheck="false" placeholder="••••••••"/>
+					<input id="password" type="password" autocomplete="current-password" spellcheck="false" placeholder="••••••••"/>
                 </label>
             </div>
             <div class="col">
                 <label class="field grow">
-                    <span>VK-ссылки <em>(по одной на строку, до 4)</em></span>
+					<span>VK-ссылки <em>(по одной на строку, до 6)</em></span>
                     <textarea id="vk" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
                 </label>
             </div>
-            <label class="toggle wide">
-                <input id="systemVPN" type="checkbox"/>
-                <span class="track"><span class="thumb"></span></span>
-                <span class="toggle-text">Системный VPN<em>весь трафик машины через туннель</em></span>
-            </label>
-        </div>
+			<div class="tunnel-mode wide" role="note">
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.6-2.8 8-7 10-4.2-2-7-5.4-7-10V6zM9 12l2 2 4-5"/></svg>
+				<span>Системный туннель<em>IPv4 через CSQTT · защита от утечки IPv6</em></span>
+			</div>
+		</form>
     </section>
 
     <section class="pane" id="settings" role="tabpanel" aria-labelledby="tabSettings">
@@ -108,7 +113,7 @@
                 <div class="row">
                     <label class="field small">
                         <span>Воркеров</span>
-                        <input id="workers" type="number" min="9" max="108" step="9" value="18"/>
+                        <input id="workers" type="number" min="9" max="126" step="9" value="18"/>
                     </label>
                     <label class="field">
                         <span>Маскировка</span>
@@ -117,17 +122,24 @@
                             <option value="video">Видео</option>
                         </select>
                     </label>
+                    <label class="field">
+						<span>Транспорт TURN</span>
+                        <select id="turnTransport">
+                            <option value="udp">UDP</option>
+                            <option value="tcp_tls">TCP/TLS</option>
+                        </select>
+                    </label>
                 </div>
-                <p class="hint">Ядро округляет число воркеров вниз до кратного 9 (от 9 до 108).</p>
+                <p class="hint">Ядро округляет число воркеров вниз до кратного 9 (от 9 до 126).</p>
                 <label class="toggle">
                     <input id="autostart" type="checkbox"/>
                     <span class="track"><span class="thumb"></span></span>
-                    <span class="toggle-text">Автозапуск<em>при входе в Windows</em></span>
+					<span class="toggle-text">Автозапуск<em>при входе в систему</em></span>
                 </label>
             </div>
             <div class="col">
                 <label class="field grow">
-                    <span>Исключения <em>(домены / IP / подсети мимо VPN)</em></span>
+					<span>Исключения <em>(домены, IP и подсети напрямую)</em></span>
                     <textarea id="excludes" spellcheck="false" placeholder="example.com&#10;192.168.0.0/16"></textarea>
                 </label>
             </div>

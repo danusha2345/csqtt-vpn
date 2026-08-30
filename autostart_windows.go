@@ -9,7 +9,7 @@ import (
 )
 
 const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
-const autoStartName = "WDTT-VPN"
+const autoStartName = "CSQTT-VPN"
 
 // SetAutoStart включает/выключает автозапуск при входе в Windows (HKCU\...\Run).
 func (a *App) SetAutoStart(v bool) error {

@@ -7,8 +7,8 @@
         </dependentAssembly>
     </dependency>
     <!-- Системный VPN ставит маршруты, DNS и NRPT-правило — всё это требует прав
-         администратора. Без этого блока `wails build` собирает exe без UAC, маршрутизация
-         молча падает и клиент откатывается в SOCKS5 при зелёном статусе «Подключено».
+         администратора. Без этого блока `wails build` собирает exe без UAC и маршрутизация
+         не поднимается.
          Дублируется в wails-admin.manifest для ручной сборки через rsrc/.syso. -->
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>

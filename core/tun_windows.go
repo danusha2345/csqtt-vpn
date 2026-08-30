@@ -3,50 +3,138 @@
 package core
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun"
 )
 
-// Параметры виртуального TUN-адаптера (Wintun).
 const (
-	tunName = "wdtt"
-	tunAddr = "10.7.0.2"
-	tunMask = "255.255.255.0"
-	tunGW   = "10.7.0.1" // виртуальный шлюз в подсети TUN (tun2socks отвечает на него)
-
-	nrptDisplayName = "WDTT DNS"
-	nrptComment     = "WDTT_MANAGED"
+	tunName         = "CSQTT"
+	tunMTU          = 1300
+	nrptDisplayName = "CSQTT DNS"
+	nrptComment     = "CSQTT_MANAGED"
 )
 
-// bypassCIDRs — подсети VK/Mail.ru/OK и Yandex-DNS, к которым ходит wdtt-client.
-// Их трафик ДОЛЖЕН идти мимо TUN (через физический шлюз), иначе петля.
 var bypassCIDRs = []string{
-	"87.240.0.0/16",   // VK
-	"93.186.224.0/19", // VK
-	"95.142.192.0/20", // VK
-	"95.213.0.0/18",   // Mail.ru
-	"94.100.176.0/20", // Mail.ru / OK
-	"217.20.144.0/20", // Mail.ru
-	"217.69.128.0/20", // Mail.ru
-	"185.6.244.0/22",  // VK
-	"77.88.8.0/24",    // Yandex DNS (резолвер wdtt-client: 77.88.8.8/77.88.8.1)
+	"87.240.0.0/16", "93.186.224.0/19", "95.142.192.0/20", "95.213.0.0/18",
+	"94.100.176.0/20", "217.20.144.0/20", "217.69.128.0/20", "185.6.244.0/22",
 }
 
-// cleanupStale убирает осиротевшие остатки прошлой сессии (процессы и
-// split-default маршруты), чтобы новый запуск был чистым.
-func (m *Manager) cleanupStale() {
-	for _, p := range []string{"tun2socks.exe", "wireproxy.exe", "wdtt-client.exe"} {
-		_, _ = runHidden("taskkill", "/F", "/IM", p)
+func platformClientName() string { return "csqtt-client.exe" }
+
+func (m *Manager) platformClientArgs() []string { return []string{"--listen", innerListen} }
+
+func (m *Manager) platformPreflight() error {
+	address, err := net.ResolveUDPAddr("udp", innerListen)
+	if err != nil {
+		return err
 	}
-	removeManagedNRPT()
-	_, _ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0")
-	_, _ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0")
+	probe, err := net.ListenUDP("udp", address)
+	if err != nil {
+		return fmt.Errorf("локальный UDP dispatcher %s занят: %w", innerListen, err)
+	}
+	return probe.Close()
+}
+
+type packetBridge struct {
+	device  tun.Device
+	conn    *net.UDPConn
+	closing atomic.Bool
+	onError func(error)
+	wg      sync.WaitGroup
+}
+
+func newPacketBridge(remote string, onError func(error)) (*packetBridge, error) {
+	endpoint, err := net.ResolveUDPAddr("udp", remote)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp", nil, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	device, err := tun.CreateTUN(tunName, tunMTU)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	bridge := &packetBridge{device: device, conn: conn, onError: onError}
+	bridge.wg.Add(2)
+	go bridge.tunToUDP()
+	go bridge.udpToTUN()
+	return bridge, nil
+}
+
+func (b *packetBridge) fail(err error) {
+	if err != nil && !b.closing.Load() && b.onError != nil {
+		go b.onError(err)
+	}
+}
+
+func (b *packetBridge) tunToUDP() {
+	defer b.wg.Done()
+	batch := b.device.BatchSize()
+	if batch < 1 {
+		batch = 1
+	}
+	bufs := make([][]byte, batch)
+	sizes := make([]int, batch)
+	for i := range bufs {
+		bufs[i] = make([]byte, 65535)
+	}
+	for !b.closing.Load() {
+		n, err := b.device.Read(bufs, sizes, 0)
+		if err != nil {
+			b.fail(err)
+			return
+		}
+		for i := 0; i < n; i++ {
+			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
+				continue
+			}
+			if _, err := b.conn.Write(bufs[i][:sizes[i]]); err != nil {
+				b.fail(err)
+				return
+			}
+		}
+	}
+}
+
+func (b *packetBridge) udpToTUN() {
+	defer b.wg.Done()
+	buf := make([]byte, 65535)
+	for !b.closing.Load() {
+		n, err := b.conn.Read(buf)
+		if err != nil {
+			b.fail(err)
+			return
+		}
+		if n > 0 {
+			packet := [][]byte{buf[:n]}
+			if _, err := b.device.Write(packet, 0); err != nil {
+				b.fail(err)
+				return
+			}
+		}
+	}
+}
+
+func (b *packetBridge) Close() error {
+	if b.closing.Swap(true) {
+		return nil
+	}
+	_ = b.conn.Close()
+	err := b.device.Close()
+	b.wg.Wait()
+	return err
 }
 
 func runHidden(name string, args ...string) (string, error) {
@@ -56,10 +144,7 @@ func runHidden(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// installManagedNRPT принудительно направляет все обычные DNS-запросы Windows
-// в локальный DNS-прокси WDTT. Это не даёт Smart Multi-Homed Name Resolution
-// выбрать провайдерский IPv6 DNS, который недоступен из-за IPv6 blackhole.
-func installManagedNRPT() error {
+func installManagedNRPT(nameServer string) error {
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
@@ -68,129 +153,102 @@ Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
 $rule = Add-DnsClientNrptRule -Namespace '.' -NameServers '%s' -DisplayName '%s' -Comment '%s' -PassThru -ErrorAction Stop
 if ($null -eq $rule -or $rule.NameServers -notcontains '%s') { throw 'NRPT verification failed' }
 Clear-DnsClientCache -ErrorAction SilentlyContinue
-`, nrptDisplayName, nrptComment, tunAddr, nrptDisplayName, nrptComment, tunAddr)
+`, nrptDisplayName, nrptComment, nameServer, nrptDisplayName, nrptComment, nameServer)
 	out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	if err != nil {
-		return fmt.Errorf("NRPT %s: %w: %s", tunAddr, err, strings.TrimSpace(out))
+		return fmt.Errorf("NRPT %s: %w: %s", nameServer, err, strings.TrimSpace(out))
 	}
 	return nil
 }
 
-// removeManagedNRPT удаляет только правило, созданное WDTT. Вызывается и при
-// штатном отключении, и в cleanupStale после аварийного завершения приложения.
 func removeManagedNRPT() {
-	ps := fmt.Sprintf(`
-Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -eq '%s' -or $_.Comment -eq '%s' } |
-  ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }
-Clear-DnsClientCache -ErrorAction SilentlyContinue
-`, nrptDisplayName, nrptComment)
+	ps := fmt.Sprintf(`Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq '%s' -or $_.Comment -eq '%s' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }; Clear-DnsClientCache -ErrorAction SilentlyContinue`, nrptDisplayName, nrptComment)
 	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 }
 
-// physDefault возвращает шлюз и ifIndex текущего (физического) дефолтного маршрута.
 func physDefault() (gw, ifIndex string, err error) {
-	ps := `$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ` +
-		`Sort-Object RouteMetric | Select-Object -First 1; "$($r.NextHop) $($r.InterfaceIndex)"`
+	ps := `$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {$_.NextHop -ne '0.0.0.0'} | Sort-Object RouteMetric | Select-Object -First 1; "$($r.NextHop) $($r.InterfaceIndex)"`
 	out, e := runHidden("powershell", "-NoProfile", "-Command", ps)
 	if e != nil {
 		return "", "", fmt.Errorf("Get-NetRoute: %v: %s", e, out)
 	}
-	f := strings.Fields(strings.TrimSpace(out))
-	if len(f) < 2 || f[0] == "" {
-		return "", "", fmt.Errorf("не разобрал дефолтный маршрут: %q", out)
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("не разобран физический default route: %q", out)
 	}
-	return f[0], f[1], nil
+	return fields[0], fields[1], nil
 }
 
-// physDNS возвращает первый IPv4 DNS-сервер физического интерфейса (провайдерский
-// резолвер). Пусто, если определить не удалось — тогда обход резолвится через
-// dnsBypassFallback.
 func physDNS(ifIndex string) string {
-	ps := fmt.Sprintf(
-		`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses`,
-		ifIndex)
-	out, err := runHidden("powershell", "-NoProfile", "-Command", ps)
-	if err != nil {
-		return ""
-	}
-	for _, f := range strings.Fields(out) {
-		f = strings.TrimSpace(f)
-		if ip := net.ParseIP(f); ip != nil && ip.To4() != nil {
-			return f
-		}
-	}
-	return ""
+	ps := fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Select-Object -First 1`, ifIndex)
+	out, _ := runHidden("powershell", "-NoProfile", "-Command", ps)
+	return strings.TrimSpace(out)
 }
 
-// cidrToRoute разбивает CIDR на сеть и маску в формате route.exe.
-func cidrToRoute(cidr string) (network, mask string, err error) {
-	_, ipnet, e := net.ParseCIDR(cidr)
-	if e != nil {
-		return "", "", e
+func cidrToRoute(cidr string) (string, string, error) {
+	ip, network, err := net.ParseCIDR(cidr)
+	if err != nil || ip.To4() == nil {
+		return "", "", fmt.Errorf("invalid IPv4 CIDR %q", cidr)
 	}
-	m := ipnet.Mask
-	if len(m) != 4 {
-		return "", "", fmt.Errorf("только IPv4: %s", cidr)
-	}
-	return ipnet.IP.String(), fmt.Sprintf("%d.%d.%d.%d", m[0], m[1], m[2], m[3]), nil
+	mask := net.IP(network.Mask).String()
+	return network.IP.String(), mask, nil
 }
 
-// setBypassRoute идемпотентно привязывает маршрут к текущему физическому шлюзу.
-// После аварийного завершения непостоянный route.exe-маршрут может пережить
-// процесс: простой route add тогда падает, а старый gateway продолжает ломать
-// обход. Сначала обновляем существующий маршрут, при его отсутствии — добавляем.
 func (m *Manager) setBypassRoute(network, mask, gw string) error {
-	out, err := runHidden("route", "change", network, "mask", mask, gw, "metric", "1")
-	if err != nil {
-		out, err = runHidden("route", "add", network, "mask", mask, gw, "metric", "1")
+	key := network + " mask " + mask
+	m.mu.Lock()
+	if m.routes[key] {
+		m.mu.Unlock()
+		return nil
 	}
+	m.mu.Unlock()
+	out, err := runHidden("route", "add", network, "mask", mask, gw, "metric", "1")
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+		if strings.Contains(strings.ToLower(out), "object already exists") {
+			return nil
+		}
+		return fmt.Errorf("route add: %w: %s", err, strings.TrimSpace(out))
 	}
 	m.mu.Lock()
-	if m.routes == nil {
-		m.routes = map[string]bool{}
-	}
-	m.routes[network+" mask "+mask] = true
+	m.routes[key] = true
 	m.mu.Unlock()
 	return nil
 }
 
-// startSystemRouting поднимает системный VPN: исключения мимо TUN + tun2socks +
-// split-default через TUN. serverHost — host из -peer (IP или домен).
-func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCSV string) error {
+func (m *Manager) cleanupStale() {
+	target := strings.ReplaceAll(m.exe(platformClientName()), "'", "''")
+	ps := fmt.Sprintf(`$target = '%s'; Get-CimInstance Win32_Process -Filter "Name='csqtt-client.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`, target)
+	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	removeManagedNRPT()
+	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
+		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
+		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
+	}
+}
+
+func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCSV string, assigned tunnelConfig) error {
 	gw, ifIndex, err := physDefault()
 	if err != nil {
-		return fmt.Errorf("физический шлюз: %w", err)
+		return err
 	}
-	m.log("• Физический шлюз: %s (if %s)", gw, ifIndex)
-
 	m.mu.Lock()
-	m.physGW, m.physIf = gw, ifIndex
-	if m.routes == nil {
-		m.routes = map[string]bool{}
-	}
+	m.physGW, m.physIf, m.routes = gw, ifIndex, map[string]bool{}
 	m.mu.Unlock()
-
-	// Провайдерский DNS физ. интерфейса — через него резолвим bypass-домены, чтобы
-	// CDN отдавал узлы, близкие к сети пользователя (публичный DNS даёт чужую
-	// геолокацию → медленный CDN). Публичный резолвер выводим мимо туннеля (/32);
-	// приватный (роутер 192.168.x) и так доступен по connected-маршруту.
-	bypassDNS := physDNS(ifIndex)
-	if bypassDNS != "" {
-		m.log("• Провайдерский DNS для обхода: %s", bypassDNS)
-		if ip := net.ParseIP(bypassDNS); ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
-			m.excludeHost(bypassDNS)
+	serverIP := resolveHost(serverHost)
+	if serverIP == "" {
+		return fmt.Errorf("не разрешён адрес сервера %s", serverHost)
+	}
+	if err := m.setBypassRoute(serverIP, "255.255.255.255", gw); err != nil {
+		return fmt.Errorf("bypass-route сервера %s: %w", serverIP, err)
+	}
+	for _, cidr := range bypassCIDRs {
+		network, mask, parseErr := cidrToRoute(cidr)
+		if parseErr == nil {
+			if err := m.setBypassRoute(network, mask, gw); err != nil {
+				return fmt.Errorf("bypass-route %s: %w", cidr, err)
+			}
 		}
 	}
-
-	// 1) Исключения для трафика wdtt-client (сервер + VK/DNS подсети) — мимо TUN.
-	if ip := resolveHost(serverHost); ip != "" {
-		m.excludeHost(ip)
-	}
-	// TURN-адреса из логов клиента, замеченные до этого момента (тогда
-	// excludeHost был no-op — физический шлюз ещё не был известен).
 	m.mu.Lock()
 	turn := make([]string, 0, len(m.turnIPs))
 	for ip := range m.turnIPs {
@@ -198,301 +256,162 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	}
 	m.mu.Unlock()
 	for _, ip := range turn {
-		m.excludeHost(ip)
-	}
-	for _, cidr := range bypassCIDRs {
-		netw, mask, e := cidrToRoute(cidr)
-		if e != nil {
-			continue
-		}
-		if e := m.setBypassRoute(netw, mask, gw); e != nil {
-			m.log("  ⚠ route %s: %v", cidr, e)
+		if err := m.addBypassHost(ip); err != nil {
+			return fmt.Errorf("bypass-route TURN relay %s: %w", ip, err)
 		}
 	}
 
-	// 1b) Пользовательские исключения. IP/подсети — сразу route мимо TUN; домены —
-	// в DNS-перехват (резолв на лету при запросе, ловит даже CDN/динамические IP).
 	var domains []string
-	providerRoutes := make(map[string]bool)
-	for _, ex := range strings.Split(excludesCSV, ",") {
-		ex = strings.TrimSpace(ex)
-		if ex == "" {
+	for _, raw := range strings.FieldsFunc(excludesCSV, func(r rune) bool { return r == ',' || r == '\n' }) {
+		value := strings.TrimSpace(raw)
+		if value == "" {
 			continue
 		}
-		switch {
-		case strings.Contains(ex, "/"): // CIDR
-			netw, mask, e := cidrToRoute(ex)
-			if e != nil {
-				m.log("  ⚠ исключение %q: %v", ex, e)
-				continue
-			}
-			if e := m.setBypassRoute(netw, mask, gw); e == nil {
-				m.log("  + исключение %s", ex)
-			} else {
-				m.log("  ⚠ route %s: %v", ex, e)
-			}
-		case net.ParseIP(ex) != nil: // IP
-			m.excludeHost(ex)
-		default: // домен → обход: резолв СЕЙЧАС (route на текущие IP, работает даже
-			// при DoH в браузере) + стабильные сети известного провайдера +
-			// DNS-перехват для динамики/внешних CDN.
-			expanded := expandBypassDomain(ex)
-			domains = append(domains, expanded...)
-			for _, cidr := range providerBypassCIDRs(ex) {
-				if providerRoutes[cidr] {
-					continue
-				}
-				providerRoutes[cidr] = true
-				netw, mask, e := cidrToRoute(cidr)
-				if e != nil {
-					m.log("  ⚠ профиль обхода %s: %v", cidr, e)
-					continue
-				}
-				if e := m.setBypassRoute(netw, mask, gw); e != nil {
-					m.log("  ⚠ route %s: %v", cidr, e)
+		if strings.Contains(value, "/") {
+			if network, mask, e := cidrToRoute(value); e == nil {
+				if err := m.setBypassRoute(network, mask, gw); err != nil {
+					return fmt.Errorf("bypass-route %s: %w", value, err)
 				}
 			}
-			for _, domain := range expanded {
-				if ips, e := net.LookupHost(domain); e == nil {
-					n := 0
-					for _, ip := range ips {
-						if p := net.ParseIP(ip); p != nil && p.To4() != nil {
-							m.excludeHost(ip)
-							n++
-						}
-					}
-					m.log("  домен %s → %d IPv4 в обход (резолв при старте)", domain, n)
-				} else {
-					m.log("  ⚠ домен %s не разрешён сейчас: %v (сработает DNS-перехват)", domain, e)
-				}
+		} else if net.ParseIP(value) != nil {
+			if err := m.addBypassHost(value); err != nil {
+				return fmt.Errorf("bypass-route %s: %w", value, err)
 			}
+		} else {
+			domains = append(domains, expandBypassDomain(value)...)
 		}
 	}
-	if len(providerRoutes) > 0 {
-		m.log("• Устойчивый профиль обхода: %d IPv4-подсетей", len(providerRoutes))
-	}
 
-	// 2) tun2socks: системный TUN → SOCKS5.
-	m.log("• Запускаю tun2socks (Wintun)…")
-	ts := exec.Command(m.exe("tun2socks.exe"),
-		"-device", "tun://"+tunName,
-		"-proxy", "socks5://"+socksBind,
-		"-mtu", "1280",
-		"-loglevel", "warn",
-	)
-	ts.Dir = m.runDir
-	hideConsole(ts)
-	tsOut, _ := ts.StdoutPipe()
-	ts.Stderr = ts.Stdout
-	if err := ts.Start(); err != nil {
-		return fmt.Errorf("старт tun2socks: %w", err)
+	bridge, err := newPacketBridge(innerListen, func(cause error) { m.bridgeFailed(cause) })
+	if err != nil {
+		return fmt.Errorf("Wintun raw bridge: %w", err)
 	}
-	attachJob(ts)
 	m.mu.Lock()
-	m.tun2socks = ts
+	m.bridge = bridge
 	m.mu.Unlock()
-	tsExit := m.watchExit("tun2socks", ts)
-	go func() {
-		// Построчно + сводка по refused-спаму: при мёртвом SOCKS5 tun2socks
-		// сыплет тысячи одинаковых warn — они топили журнал и вешали GUI.
-		sc := bufio.NewScanner(tsOut)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		var refused int
-		var lastFlush time.Time
-		for sc.Scan() {
-			line := sc.Text()
-			switch {
-			case strings.Contains(line, "unreachable"): // не спамить IPv6/мусором
-			case strings.Contains(line, socksBind+": connectex"):
-				refused++
-				if time.Since(lastFlush) > 5*time.Second {
-					m.log("⚠ [tun2socks] SOCKS5 %s недоступен — отклонено соединений: %d", socksBind, refused)
-					refused = 0
-					lastFlush = time.Now()
-				}
-			default:
-				m.log("[tun2socks] %s", line)
-			}
-		}
-		if refused > 0 {
-			m.log("⚠ [tun2socks] SOCKS5 %s недоступен — отклонено соединений: %d", socksBind, refused)
-		}
-	}()
-
-	// 3) Ждём появления адаптера и настраиваем IP/маршруты.
 	if err := m.waitAdapter(ctx, tunName, 12*time.Second); err != nil {
 		return err
 	}
-	if err := m.cancelled(ctx); err != nil {
-		return err
+	idxOut, _ := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf("(Get-NetAdapter -Name '%s').ifIndex", tunName))
+	tunIndex := strings.TrimSpace(idxOut)
+	if tunIndex == "" {
+		return fmt.Errorf("не определён ifIndex адаптера %s", tunName)
 	}
-	idxOut, _ := runHidden("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("(Get-NetAdapter -Name '%s').ifIndex", tunName))
-	tunIdx := strings.TrimSpace(idxOut)
-	m.log("• Настраиваю TUN-адаптер %s (if %s)…", tunName, tunIdx)
-
-	if out, e := runHidden("netsh", "interface", "ipv4", "set", "address",
-		"name="+tunName, "static", tunAddr, tunMask); e != nil {
-		return fmt.Errorf("netsh set address: %v %s", e, out)
+	if out, e := runHidden("netsh", "interface", "ipv4", "set", "address", "name="+tunName, "static", assigned.IP, "255.255.255.0"); e != nil {
+		return fmt.Errorf("IP адаптера: %v: %s", e, out)
 	}
-	// Низкая метрика интерфейса TUN — иначе split-default проигрывает физическому
-	// (Windows маршрутизирует по сумме «route metric + interface metric»).
 	_, _ = runHidden("netsh", "interface", "ipv4", "set", "interface", tunName, "metric=1")
-	time.Sleep(800 * time.Millisecond) // дать IP 10.7.0.2 примениться ДО bind DNS и маршрутов
-
-	// DNS-перехват на адресе TUN. После успешного bind добавляем default NRPT-rule:
-	// иначе Windows может предпочесть провайдерский IPv6 DNS физического адаптера,
-	// а он попадает в наш IPv6 blackhole и даёт выборочные DNS timeout.
-	bypassUpstream := ""
-	if bypassDNS != "" {
-		bypassUpstream = bypassDNS + ":53"
+	time.Sleep(500 * time.Millisecond)
+	bypassUpstream := physDNS(ifIndex)
+	if bypassUpstream != "" {
+		bypassUpstream += ":53"
 	}
-	if err := m.cancelled(ctx); err != nil {
+	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream); err != nil {
 		return err
 	}
-	if err := m.startDNS(tunAddr+":53", domains, bypassUpstream); err != nil {
-		return fmt.Errorf("DNS-перехват: %w", err)
+	if out, e := runHidden("netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {
+		return fmt.Errorf("DNS адаптера: %v: %s", e, out)
 	}
-	if out, err := runHidden("netsh", "interface", "ipv4", "set", "dnsservers",
-		"name="+tunName, "static", tunAddr, "primary"); err != nil {
-		return fmt.Errorf("DNS TUN %s: %w: %s", tunAddr, err, strings.TrimSpace(out))
-	}
-	if err := installManagedNRPT(); err != nil {
-		return fmt.Errorf("DNS-policy Windows: %w", err)
-	}
-	m.log("• DNS-policy Windows: все запросы → %s", tunAddr)
-
-	// 4) split-default через TUN (0.0.0.0/1 + 128.0.0.0/1) с явной привязкой к
-	// интерфейсу TUN (IF idx) и низкой метрикой. Основной дефолт не трогаем.
-	if err := m.cancelled(ctx); err != nil {
+	if err := installManagedNRPT(assigned.IP); err != nil {
 		return err
 	}
-	var splitOK int
-	for _, half := range [][2]string{{"0.0.0.0", "128.0.0.0"}, {"128.0.0.0", "128.0.0.0"}} {
-		args := []string{"add", half[0], "mask", half[1], tunGW, "metric", "1"}
-		if tunIdx != "" {
-			args = append(args, "if", tunIdx)
-		}
-		out, e := runHidden("route", args...)
-		m.log("  route %s mask %s → %s", half[0], half[1], statusOf(e, out))
-		if e == nil {
-			splitOK++
-			m.mu.Lock()
-			m.routes[half[0]+" mask "+half[1]] = true
-			m.mu.Unlock()
-		}
-	}
-	// Без обеих половин split-default трафик идёт мимо туннеля. Молчать нельзя:
-	// иначе GUI показал бы «Защищено · весь трафик» при нулевой защите.
-	if splitOK < 2 {
-		return fmt.Errorf("маршруты через туннель не установились (%d из 2) — нужны права администратора", splitOK)
-	}
 
-	// 5) IPv6: blackhole — весь IPv6 заворачиваем в TUN; tun2socks не сможет его
-	//       проксировать → IPv6-соединения сразу падают, приложения уходят на IPv4.
-	// Состояние IPv6 физических адаптеров не меняем: это пользовательская/системная
-	// настройка, которую приложение не должно глобально перезаписывать.
-	if tunIdx != "" {
-		for _, p := range []string{"::/1", "8000::/1"} {
-			out, e := runHidden("netsh", "interface", "ipv6", "add", "route",
-				p, "interface="+tunIdx, "metric=1")
-			m.log("  ipv6 blackhole %s → %s", p, statusOf(e, out))
+	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
+		if out, e := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps); e != nil {
+			return fmt.Errorf("split route %s: %v: %s", prefix, e, out)
 		}
+	}
+	for _, prefix := range []string{"::/1", "8000::/1"} {
+		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null`, prefix, tunIndex)
+		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
 	}
 	m.mu.Lock()
 	m.sysActive = true
 	m.mu.Unlock()
-	// Смерть tun2socks оставляет split-маршруты на несуществующем TUN: сеть пропадает
-	// мгновенно, а GUI продолжает показывать «Защищено». Гасим VPN и возвращаем
-	// прямой интернет — как при серии падений wireproxy.
-	m.failSafeOnExit("tun2socks", tsExit)
-	m.log("✅ Системный VPN активен — весь трафик через туннель")
 	return nil
 }
 
-// cancelled сообщает, что подключение больше не нужно: пользователь нажал «Отмена»
-// или отменился контекст. startSystemRouting состоит из долгих внешних вызовов
-// (powershell, netsh, route), и без таких проверок между этапами откат Disconnect
-// успевает пройти раньше, чем установка маршрутов и NRPT-правила.
-func (m *Manager) cancelled(ctx context.Context) error {
-	if m.isShuttingDown() {
-		return context.Canceled
+func (m *Manager) bridgeFailed(err error) {
+	m.mu.Lock()
+	intentional, callback, cmd := m.shuttingDown, m.onDown, m.client
+	if !intentional {
+		m.shuttingDown = true
 	}
-	return ctx.Err()
+	m.mu.Unlock()
+	if intentional {
+		return
+	}
+	m.log("⛔ Wintun bridge завершился: %v", err)
+	m.stopSystemRouting()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	if callback != nil {
+		callback()
+	}
 }
 
-// waitAdapter ждёт появления Wintun-адаптера с заданным именем.
 func (m *Manager) waitAdapter(ctx context.Context, name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	for {
-		out, _ := runHidden("powershell", "-NoProfile", "-Command",
-			fmt.Sprintf(`if (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue) { 'ok' }`, name))
+	for time.Now().Before(deadline) {
+		out, _ := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf("if (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue) { 'ok' }", name))
 		if strings.Contains(out, "ok") {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(300 * time.Millisecond):
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("TUN-адаптер %s не появился за %s", name, timeout)
-		}
+	}
+	return fmt.Errorf("адаптер %s не появился", name)
+}
+
+func (m *Manager) excludeHost(ip string) {
+	if err := m.addBypassHost(ip); err != nil {
+		m.log("⚠ bypass %s не добавлен: %v", ip, err)
 	}
 }
 
-// excludeHost добавляет /32-исключение через физический шлюз (мимо TUN).
-// Вызывается также динамически из readClient для адресов TURN.
-func (m *Manager) excludeHost(ip string) {
+func (m *Manager) addBypassHost(ip string) error {
 	m.mu.Lock()
 	gw := m.physGW
-	key := ip + " mask 255.255.255.255"
-	already := m.routes != nil && m.routes[key]
-	active := m.sysActive || gw != ""
+	already := m.routes[ip+" mask 255.255.255.255"]
 	m.mu.Unlock()
-	if ip == "" || gw == "" || already || !active {
-		return
+	if gw == "" || ip == "" || already {
+		return nil
 	}
-	if e := m.setBypassRoute(ip, "255.255.255.255", gw); e == nil {
-		m.log("  + bypass %s", ip)
+	if err := m.setBypassRoute(ip, "255.255.255.255", gw); err != nil {
+		return err
 	}
+	m.log("  + bypass %s", ip)
+	return nil
 }
 
-// stopSystemRouting откатывает все добавленные маршруты и гасит tun2socks.
 func (m *Manager) stopSystemRouting() {
-	// Сначала снимаем policy, пока локальный DNS-прокси ещё отвечает. Это также
-	// не оставляет Windows привязанной к 10.7.0.2 после отключения VPN.
 	removeManagedNRPT()
 	m.stopDNS()
 	m.mu.Lock()
-	ts := m.tun2socks
-	routes := m.routes
-	m.tun2socks = nil
-	m.routes = map[string]bool{}
-	m.sysActive = false
+	bridge, routes := m.bridge, m.routes
+	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
-
-	for r := range routes {
-		parts := strings.SplitN(r, " mask ", 2)
+	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
+		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
+		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
+	}
+	for route := range routes {
+		parts := strings.SplitN(route, " mask ", 2)
 		if len(parts) == 2 {
 			_, _ = runHidden("route", "delete", parts[0], "mask", parts[1])
-		} else {
-			_, _ = runHidden("route", "delete", parts[0])
 		}
 	}
-	// Безусловно снимаем split-default (на случай рассинхрона m.routes) — гарантия,
-	// что основной дефолтный маршрут вернётся в работу.
-	_, _ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0")
-	_, _ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0")
-	if ts != nil && ts.Process != nil {
-		_ = ts.Process.Kill()
+	if bridge != nil {
+		_ = bridge.Close()
 	}
 }
 
-// Stats возвращает счётчики байт TUN-адаптера (down, up) и ok=true в системном
-// VPN-режиме. Эмпирически на Wintun: ReceivedBytes = входящий пользователю трафик
-// (download), SentBytes = исходящий (upload).
 func (m *Manager) Stats() (down, up int64, ok bool) {
 	m.mu.Lock()
 	active := m.sysActive
@@ -500,37 +419,15 @@ func (m *Manager) Stats() (down, up int64, ok bool) {
 	if !active {
 		return 0, 0, false
 	}
-	out, err := runHidden("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf(`$s = Get-NetAdapterStatistics -Name '%s' -ErrorAction SilentlyContinue; "$($s.ReceivedBytes) $($s.SentBytes)"`, tunName))
+	out, err := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf(`$s = Get-NetAdapterStatistics -Name '%s' -ErrorAction SilentlyContinue; "$($s.ReceivedBytes) $($s.SentBytes)"`, tunName))
 	if err != nil {
 		return 0, 0, false
 	}
-	f := strings.Fields(strings.TrimSpace(out))
-	if len(f) < 2 {
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) < 2 {
 		return 0, 0, false
 	}
-	d, e1 := strconv.ParseInt(f[0], 10, 64)
-	u, e2 := strconv.ParseInt(f[1], 10, 64)
-	if e1 != nil || e2 != nil {
-		return 0, 0, false
-	}
-	return d, u, true
-}
-
-func statusOf(err error, out string) string {
-	if err == nil {
-		return "OK"
-	}
-	return fmt.Sprintf("ошибка: %v %s", err, strings.TrimSpace(out))
-}
-
-func resolveHost(host string) string {
-	if ip := net.ParseIP(host); ip != nil {
-		return host
-	}
-	ips, err := net.LookupHost(host)
-	if err == nil && len(ips) > 0 {
-		return ips[0]
-	}
-	return ""
+	down, err1 := strconv.ParseInt(fields[0], 10, 64)
+	up, err2 := strconv.ParseInt(fields[1], 10, 64)
+	return down, up, err1 == nil && err2 == nil
 }

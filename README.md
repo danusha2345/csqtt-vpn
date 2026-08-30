@@ -1,184 +1,129 @@
-# WDTT VPN
+# CSQTT VPN Desktop
 
-Десктопный VPN-клиент для WDTT (**Windows**, GUI на Wails) — туннелирует трафик
-через TURN-серверы VK, маскируя соединение под зашифрованный медиатрафик звонка.
+[![Boosty](https://img.shields.io/badge/Boosty-Support%20development-FF7143?style=for-the-badge&logo=boosty&logoColor=white)](https://boosty.to/danusha/donate)
 
-Использует то же Go-ядро (`wdtt-client`), что и Android-версия
-[danusha2345/proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android):
-бинарь `bin/wdtt-client.exe` собирается из её `go_client/` и включает VK Calls
-captcha-free path. Полную карту проектов семейства см. в разделе
-[Проекты семейства WDTT](#проекты-семейства-wdtt).
+Репозиторий desktop-клиента: [`danusha2345/csqtt-vpn`](https://github.com/danusha2345/csqtt-vpn).
+Android-клиент и сервер нашей сборки: [`danusha2345/csqtt`](https://github.com/danusha2345/csqtt).
 
-> **Платформы:** полностью работает под **Windows**. Linux-таргет *компилируется*, но
-> системный VPN под не-Windows — заглушка (`core/tun_other.go`: `startSystemRouting`
-> возвращает «поддерживается только на Windows»), а helper-бинари в `bin/` только под
-> Windows (`.exe`), причём `Manager.exe()` не убирает суффикс `.exe`. Для рабочего
-> Linux-GUI используйте отдельный проект `wdtt-linux-client` (Python).
+Десктопный клиент CSQTT для Windows и Linux. GUI на Wails управляет официальным
+Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
+создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
+
+Версия desktop bundle синхронизирована с core: **2.1.6**. Endpoint по умолчанию:
+`185.245.34.224:46010/udp`; web panel сервера: `https://185.245.34.224:46002/`.
 
 ## Архитектура
 
+### Windows
+
+```text
+приложения → Wintun CSQTT → raw-IP UDP bridge 127.0.0.1:19000
+            → csqtt-client.exe → VK TURN → CSQTT server → интернет
 ```
-трафик → TUN (tun2socks) → SOCKS5 (wireproxy, userspace WireGuard)
-       → wdtt-client (VK TURN) → wdtt-server (ваш VPS) → интернет
+
+GUI устанавливает split-default routes, NRPT/DNS и IPv6 leak guard. Адрес
+сервера, сети VK и обнаруженные TURN relay получают bypass через физический
+gateway. При падении transport или Wintun маршруты и DNS снимаются fail-safe.
+
+### Linux
+
+```text
+приложения → /dev/net/tun (csqtt0) → TUN FD через abstract UDS/SCM_RIGHTS
+            → csqtt-client → VK TURN → CSQTT server → интернет
 ```
 
-- **Системный VPN** со split-маршрутизацией (трафик клиента к VK идёт мимо туннеля).
-- **DNS-перехват** для обхода по доменам, блокировка IPv6-утечки. В системном
-  VPN Windows получает временное default NRPT-правило `WDTT DNS`, поэтому
-  физический IPv6 DNS провайдера не обходит локальный прокси `10.7.0.2`. Правило
-  удаляется при отключении и при следующем старте после аварийного завершения.
-  Исключения `ya.ru`, `yandex.ru` и `yandex.com` автоматически включают связанное
-  семейство `yandex.net`/`yastatic.net`/`yandex.st`, чтобы HTML и ресурсы страницы
-  не выходили через разные внешние IP. Для основной сети Яндекса ставится
-  устойчивый профиль агрегированных IPv4-префиксов AS13238; поэтому обход не
-  зависит от случайного A-ответа, TTL или включённого в браузере DoH. DNS-прокси
-  продолжает добавлять динамические адреса внешних CDN.
-- **Подключение без капчи (VK Calls):** клиент по умолчанию получает TURN-креды
-  анонимным path через `api.vk.me` (`-vk-auth-mode=vkcalls`) — VK Smart Captcha
-  вообще не запрашивается. Если VK Calls недоступен, идёт fallback на прежний VK Auth
-  с авто-решателем капчи (`-captcha-mode auto`: Go v2 → Auto WebView → ручной).
-  Режим включён из коробки; GUI отдельного тумблера не выводит и полагается на дефолт
-  ядра `go_client`.
-- **GUI** на Wails (окно 720×560): тёмная тема, профили серверов, автозапуск,
-  метрики трафика, диагностика. Реактор живёт в закреплённом доке — при
-  подключении схлопывается в приборную полосу со статусом, аптаймом и трафиком;
-  остальное разложено по трём вкладкам (Подключение / Настройки / Журнал,
-  `Ctrl+1…3`), скроллится только активная вкладка.
-- **Откат состояния системы.** Закрытие окна гасит VPN и снимает маршруты, DNS и
-  NRPT-правило. Дочерние процессы привязаны к Job-объекту, поэтому снятие GUI из
-  диспетчера задач убивает и `tun2socks` с `wireproxy` — система не остаётся в
-  туннеле, которым никто не управляет. Смерть `tun2socks` или `wdtt-client`
-  переводит клиент в fail-safe (прямой интернет), а не оставляет «чёрную дыру»
-  под зелёным статусом.
-- Self-contained: WireGuard ставить не нужно (userspace). Нужен свой WDTT-сервер.
+Linux backend использует нативный `--tun-uds` Rust-клиента, `iproute2` и
+`systemd-resolved`. Split routes, DNS и IPv6 leak guard откатываются при
+отключении или завершении transport. Для TUN и маршрутов GUI пока запускается с
+root-правами; privilege-separated helper — отдельная следующая итерация.
 
-## Рабочий сервер проекта
+Пароль и VK call links desktop-оболочка передаёт transport-процессу через
+одноразовый JSON в `stdin` (`--credentials-stdin`), а не через process argv.
 
-Проверенные 10 июля 2026 года рабочие endpoint:
+## Содержимое release bundle
 
-- `185.245.34.224:56000/udp` — основной VPS;
-- `185.221.22.17:56000/udp` — второй VPS (weecere, Fremont).
+Windows:
 
-На обоих VPS активен и включён `wdtt-server.service`; бинарь расположен в
-`/opt/wdtt/wdtt-server`, конфигурация — в `/etc/wdtt/`, внутренний WireGuard-порт —
-`56011/udp`. Подробные локальные карточки находятся в
-`../Servera_vpn_andmo/servers/`.
+```text
+CSQTT-VPN.exe
+bin/csqtt-client.exe
+bin/wintun.dll
+```
 
-Оба сервера обновлены 10 июля 2026 года из ветки `v1.2.4` и поддерживают
-маскировку `audio` и `video`. Пароли при обновлении не менялись и в репозитории
-не хранятся.
+Нужны Windows 10/11 и WebView2 Runtime. `CSQTT-VPN.exe` содержит manifest
+`requireAdministrator`.
 
-## Устойчивость и нагрузка (торренты)
+Linux:
 
-`wireproxy` (userspace WireGuard + SOCKS5) под валом одновременных соединений —
-типично **BitTorrent/DHT** (сотни коннектов на порты 6881/51413/6969/2710) — может
-упасть с `exit status 2` (паника/OOM). Без живого SOCKS5 на `127.0.0.1:1080`
-`tun2socks` превращает сеть в «чёрную дыру»: весь трафик уходит в мёртвый прокси
-(`wsarecv: forcibly closed`), интернет пропадает.
+```text
+CSQTT-VPN
+bin/csqtt-client
+```
 
-Поэтому ядро (`core/core.go`):
+Нужны `iproute2`, `systemd-resolved`, GTK 3 и WebKitGTK 4.1. Rust transport
+собран статически под musl; Wails GUI использует системные GTK/WebKit библиотеки.
+Запуск текущей версии:
 
-- **Супервайзер** `superviseWireproxy` перезапускает упавший `wireproxy` на том же
-  порту (backoff, до 5 попыток подряд) — `tun2socks` и маршруты восстанавливаются
-  сами, маршруты трогать не нужно. Счётчик сбрасывается, если процесс прожил >60 с.
-- **Fail-safe**: если перезапуски не помогают, VPN гасится (снимаются `tun2socks` и
-  системные маршруты, возвращается прямой интернет), GUI через `onDown` возвращает
-  кнопку в «Подключить» — лучше прямой интернет, чем «чёрная дыра».
+```bash
+sudo -E ./CSQTT-VPN
+```
 
-Windows-комплект использует `wireproxy` из ветки upstream после `v1.1.2`
-(`55dea163`, WireGuard/netstack snapshot 2025-05-22). Релизный `v1.1.2` был
-собран со snapshot WireGuard 2023-12-11 и на Windows падал под большим числом
-одновременных BitTorrent/DHT-соединений.
+## Возможности GUI
 
-> На уровне Windows-маршрутов резать трафик **по портам** нельзя (`route` работает по
-> IP, а `tun2socks` ловит весь диапазон `0.0.0.0/1`+`128.0.0.0/1`), поэтому
-> торрент-шторм программно не отфильтровать. Если качаете торренты — либо выключайте
-> их при активном VPN, либо настройте bind торрент-клиента мимо туннеля. Супервайзер
-> делает такой краш не фатальным, но не бесплатным.
+- профили сервера, пароля, VK links и исключений;
+- `audio`/`video` obfuscation и TURN `UDP`/`TCP-TLS`;
+- от 9 до 126 workers с нормализацией до кратного 9;
+- системный TUN, DNS proxy и маршрутизация доменов/IP/CIDR напрямую;
+- журнал, диагностика, скорость и объём текущей сессии;
+- Windows autostart (на Linux скрыт до появления privilege-separated helper).
 
 ## Сборка
 
-Требуется Go 1.24+, Node 18+, Wails CLI v2.12 (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`).
-
-### Windows (.exe) — основной таргет, кросс-сборка с Linux
+Требуются Go 1.25+, Node.js/npm, Wails 2.13 и Rust 1.97.1. Frontend:
 
 ```bash
-# ВАЖНО: в корне лежит ручной rsrc_windows_amd64.syso. wails генерит СВОЙ ресурс →
-# две .rsrc-секции → линкер падает с "too many .rsrc sections". Убрать на время сборки:
-mv rsrc_windows_amd64.syso /tmp/ 2>/dev/null
-wails build -platform windows/amd64
-mv /tmp/rsrc_windows_amd64.syso . 2>/dev/null
+cd frontend
+npm ci
+npm audit
+npm run build
 ```
 
-> **Права администратора.** Системный VPN ставит маршруты, DNS и NRPT-правило —
-> без повышения прав всё это молча падает, и клиент откатывается в SOCKS5 при
-> зелёном статусе «Подключено». Манифест с `requireAdministrator` лежит в двух
-> местах и должен оставаться в обоих: `build/windows/wails.exe.manifest` (его
-> использует `wails build`, когда .syso убран) и `wails-admin.manifest` (для
-> ручной сборки через rsrc). Проверить готовый бинарь:
-> `strings -a build/bin/WDTT-VPN.exe | grep requireAdministrator`.
-> Сборка от 14 июля 2026 (`b425ae5`) этого блока не содержала — у неё системный
-> VPN не работал вовсе. Дополнительно клиент теперь сам отказывается включать
-> системный VPN без прав и говорит об этом прямо, вместо тихой деградации.
-
-Результат: `build/bin/WDTT-VPN.exe`. Рядом с ним должна быть папка `bin/`
-(wdtt-client.exe, wireproxy.exe, tun2socks.exe, wintun.dll). Нужен WebView2 Runtime
-(есть в Windows 10/11).
-
-### Отдельная диагностика Windows
-
-В каталоге `tools/` лежит read-only сборщик диагностики. Сначала включите WDTT VPN
-и воспроизведите проблему, затем запустите двойным кликом
-`Run-WDTT-Diagnostics.cmd`. Можно указать проблемные домены через запятую.
-
-Отчёт `WDTT-diagnostics-*.txt` сохраняется в `%TEMP%\WDTT-Diagnostics` в UTF-8;
-после проверки эта папка откроется автоматически. Скрипт создаёт отчёт сразу и
-дописывает его по ходу, а вывод самого запуска сохраняется в `launcher-latest.txt`,
-поэтому даже ранняя ошибка не теряется. В отчёт входят состояние процессов и
-локальных портов WDTT, адаптеры, IPv4/IPv6 routes, DNS, direct/SOCKS5
-HTTP-проверки и MTU. `CommandLine` процессов, пароль, WireGuard keys и полные VK
-call links намеренно не собираются.
-
-### Linux (только GUI, без VPN-функций — см. оговорку выше)
+Проверки Go:
 
 ```bash
-# wails по умолчанию ищет webkit2gtk-4.0; на свежих дистрибутивах только 4.1 → тег webkit2_41
-wails build -platform linux/amd64 -tags webkit2_41
+go test ./...
+go test -race ./core
+go vet ./...
+GOOS=windows GOARCH=amd64 go test -c ./core
 ```
 
-Результат: `build/bin/WDTT-VPN`. Зависимости: `libgtk-3`, `libwebkit2gtk-4.1`.
-
-> Альтернатива (ручная сборка .exe без wails, с готовым .syso для иконки):
-> `cd frontend && npm install && npm run build && cd .. && CGO_ENABLED=0 GOOS=windows`
-> `GOARCH=amd64 go build -tags "desktop,production" -buildvcs=false -ldflags "-H windowsgui -s -w" -o WDTT-VPN.exe .`
-
-### Сборка клиентского бинаря `bin/wdtt-client.exe`
-
-Ядро клиента берётся из соседнего репозитория
-[proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android)
-(модуль `go_client/`, требует Go 1.26+):
+Windows GUI:
 
 ```bash
-cd proxy-turn-vk-android/go_client
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o wdtt-client.exe .
-# затем положить рядом с WDTT-VPN.exe в bin/
+mv rsrc_windows_amd64.syso /tmp/
+wails build -platform windows/amd64 -trimpath
+mv /tmp/rsrc_windows_amd64.syso .
 ```
 
-`wireproxy.exe`, `tun2socks.exe`, `wintun.dll` — готовые сторонние бинари, пересборка
-не нужна (см. `wdtt-windows-client/README.md` для источников и версий).
+Linux GUI:
 
-## Проекты семейства WDTT
+```bash
+wails build -platform linux/amd64 -tags webkit2_41 \
+  -trimpath -clean=false
+```
 
-WDTT (**W**ireGuard **o**ver **T**URN **T**unnel) — семейство клиентов с общим Go-ядром
-и общим сервером. Все они гоняют WireGuard через TURN-серверы VK-звонков.
+Rust core собирается из `rust-client/` репозитория CSQTT:
 
-| Проект | Платформа | Роль |
-|--------|-----------|------|
-| [danusha2345/proxy-turn-vk-android](https://github.com/danusha2345/proxy-turn-vk-android) | Android | **Основной репозиторий**: приложение (APK), Go-ядро `go_client/` (общий клиент) и `server.go` (WDTT-сервер) |
-| **wdtt-vpn** (этот репозиторий) | Windows (Linux — только GUI) | Десктопный GUI на Wails |
-| `wdtt-windows-client` | Windows | Ранний CLI/лаунчер-порт; вытеснен этим проектом, оставлен как справка по helper-бинарям |
-| `wdtt-linux-client` | Linux | Рабочий Linux-GUI на Python |
-| [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) | — | Upstream-первоисточник протокола (VK TURN over DTLS) |
+```bash
+cargo build --release --locked --target x86_64-pc-windows-gnu
+cargo zigbuild --release --locked --target x86_64-unknown-linux-musl
+```
 
-Клиент и сервер собираются из ядра `proxy-turn-vk-android`; десктопные/CLI-обёртки
-лишь запускают этот бинарь и настраивают маршрутизацию под свою ОС.
+## Ограничения проверки
+
+Unit/race/cross-compile, frontend audit/build, Wintun PE build, Linux TUN namespace
+и SCM_RIGHTS проверяются локально. Полный TURN e2e требует действующей VK call
+link/hash; секреты в тесты и репозиторий не включаются.
+
+CSQTT core распространяется по лицензии upstream PolyForm Noncommercial 1.0.0.
+Исходный проект и автор протокола: [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt).
