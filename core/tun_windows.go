@@ -385,20 +385,9 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	}
 	_, _ = runHidden("netsh", "interface", "ipv4", "set", "interface", tunName, "metric=1")
 	time.Sleep(500 * time.Millisecond)
-	bypassUpstream := physDNS(ifIndex)
-	if bypassUpstream != "" {
-		bypassUpstream += ":53"
-	}
-	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream); err != nil {
-		return err
-	}
-	if out, e := runHidden("netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {
-		return fmt.Errorf("DNS адаптера: %v: %s", e, out)
-	}
-	if err := installManagedNRPT(assigned.IP); err != nil {
-		return err
-	}
 
+	// Активируем split routes до DNS-proxy/NRPT. Поэтому его публичный UDP
+	// upstream уже идёт внутри CSQTT, а не напрямую через ТСПУ клиента.
 	m.routeMu.Lock()
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
 		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
@@ -412,6 +401,21 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
 	}
 	m.routeMu.Unlock()
+	m.log("✓ Системные маршруты направлены в CSQTT")
+
+	bypassUpstream := physDNS(ifIndex)
+	if bypassUpstream != "" {
+		bypassUpstream += ":53"
+	}
+	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream); err != nil {
+		return err
+	}
+	if out, e := runHidden("netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {
+		return fmt.Errorf("DNS адаптера: %v: %s", e, out)
+	}
+	if err := installManagedNRPT(assigned.IP); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	m.sysActive = true
 	m.mu.Unlock()
