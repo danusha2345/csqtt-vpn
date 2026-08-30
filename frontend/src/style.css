@@ -1,0 +1,321 @@
+/* CSQTT VPN — «инженерный тёмный терминал».
+   Шрифты только системные: приложение офлайновое, а @import с fonts.googleapis.com
+   в лучшем случае молча не грузился (и тогда UI и так рисовался Segoe UI), в худшем —
+   блокировал первую отрисовку и светил запрос в сеть до подключения туннеля. */
+:root {
+    --bg:        #0b0d12;
+    --bg-2:      #11141c;
+    --surface:   #151a25;
+    --surface-2: #1b2231;
+    --line:      #2b3448;
+    --text:      #e7ecf3;
+    --text-dim:  #a5aec1;
+    --text-mute: #737e96;
+    --accent:    #37e6b0;  /* защищён */
+    --accent-2:  #1f8f66;
+    --warn:      #f5b14c;  /* подключение */
+    --off:       #4a5266;  /* отключён */
+    --danger:    #ff5c7a;
+    --mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+    --sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+    --pw: 132px;           /* диаметр реактора; меняется вместе с состоянием дока */
+}
+
+/* Низкое окно (в том числе масштаб Windows 125/150 %) — реактор ужимается, чтобы
+   форма подключения осталась читаемой, а не уехала в прокрутку целиком. */
+@media (max-height: 540px) { :root { --pw: 104px; } }
+@media (max-height: 480px) { :root { --pw: 84px; } }
+
+* { box-sizing: border-box; min-width: 0; }
+
+/* Страница не скроллится никогда: скроллится только активная панель. Иначе при
+   раскрытых настройках главная кнопка уезжает за верхний край окна. */
+html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+}
+
+/* Атмосфера: радиальное свечение + плёнка зерна */
+.glow {
+    position: fixed; inset: -40% 0 auto 0; height: 60%;
+    background: radial-gradient(60% 80% at 50% 0%, rgba(52,224,161,.16), transparent 70%);
+    pointer-events: none; z-index: 0;
+    transition: background .6s ease;
+}
+body[data-state="connected"] .glow {
+    background: radial-gradient(70% 90% at 50% 0%, rgba(52,224,161,.30), transparent 70%);
+}
+body[data-state="connecting"] .glow {
+    background: radial-gradient(70% 90% at 50% 0%, rgba(245,177,76,.22), transparent 70%);
+}
+.grain {
+    position: fixed; inset: 0; pointer-events: none; z-index: 1; opacity: .04;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.app {
+    position: relative; z-index: 2;
+    height: 100%; display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    gap: 10px; padding: 12px 16px 14px;
+}
+
+/* ─── шапка ─── */
+.topbar { display: flex; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark { position: relative; display: flex; align-items: center; gap: 3px; width: 27px; }
+.brand-mark::before { content: ''; position: absolute; left: 1px; right: 1px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-2), transparent); }
+.brand-mark i { position: relative; width: 5px; height: 5px; border: 1px solid var(--accent-2);
+    background: var(--bg); transform: rotate(45deg); }
+.brand-mark i:nth-child(2) { width: 7px; height: 7px; background: var(--accent);
+    border-color: var(--accent); box-shadow: 0 0 9px rgba(55,230,176,.4); }
+.brand-name { font-weight: 700; letter-spacing: .14em; font-size: 14px; }
+.brand-dim { color: var(--text-mute); font-weight: 600; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.platform { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; color: var(--text-mute);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 7px; }
+.uptime { font-family: var(--mono); font-size: 11px; color: var(--text-mute);
+    font-variant-numeric: tabular-nums; }
+.conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off);
+    box-shadow: 0 0 0 0 transparent; transition: background .4s, box-shadow .4s; flex: none; }
+.conn-dot[data-state="connecting"] { background: var(--warn); animation: blink 1s infinite; }
+.conn-dot[data-state="connected"] { background: var(--accent); box-shadow: 0 0 10px 1px var(--accent); }
+@keyframes blink { 50% { opacity: .25; } }
+
+/* ─── док ─── */
+.dock {
+	position: relative; overflow: hidden;
+    display: grid; grid-template-columns: auto; justify-items: center;
+    align-content: center; gap: 8px; padding: 6px 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    transition: padding .35s ease;
+}
+.dock::before, .dock::after { content: ''; position: absolute; top: calc(50% - 1px); height: 1px;
+    width: calc(50% - var(--pw) / 2 - 22px); opacity: .55; pointer-events: none; }
+.dock::before { left: 0; background: linear-gradient(90deg, transparent, var(--line)); }
+.dock::after { right: 0; background: linear-gradient(90deg, var(--line), transparent); }
+body[data-state="connected"] .dock::before, body[data-state="connected"] .dock::after,
+body[data-state="connecting"] .dock::before, body[data-state="connecting"] .dock::after { display: none; }
+/* max-width обязателен: при justify-items ширина считается по содержимому, и одна
+   длинная строка журнала растягивала блок за границы дока. */
+.dock-info { text-align: center; min-width: 0; max-width: 100%; overflow: hidden; }
+.status { font-size: 16px; font-weight: 700; letter-spacing: .02em; }
+.status-sub { font-family: var(--mono); font-size: 11px; color: var(--text-mute);
+    letter-spacing: .02em; margin-top: 2px; }
+/* Хвост журнала: видно, что происходит, не переключаясь на вкладку «Журнал». */
+.log-tail {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-mute);
+    margin-top: 4px; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.log-tail:empty { display: none; }
+
+/* Подключено: док схлопывается в горизонтальную приборную полосу. */
+body[data-state="connected"] .dock,
+body[data-state="connecting"] .dock {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    justify-items: start; align-items: center;
+    gap: 14px; padding: 10px 16px; text-align: left;
+}
+/* justify-items: start даёт детям ширину по содержимому — без stretch длинная
+   строка журнала вылезала из своей колонки и наезжала на метрики. */
+body[data-state="connected"] .dock-info,
+body[data-state="connecting"] .dock-info {
+    text-align: left; justify-self: stretch; overflow: hidden;
+}
+body[data-state="connected"] { --pw: 60px; }
+body[data-state="connecting"] { --pw: 60px; }
+
+/* ─── реактор ─── */
+.power {
+    --c: var(--off);
+    position: relative; width: var(--pw); height: var(--pw); border: none; cursor: pointer;
+    background: none; border-radius: 50%; padding: 0; flex: none;
+    transition: width .35s ease, height .35s ease;
+}
+.power-ring {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from 0deg, var(--c), transparent 30%, transparent 70%, var(--c));
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+    opacity: .35; transition: opacity .4s;
+}
+.power-core {
+    position: absolute; inset: calc(var(--pw) * .09); border-radius: 50%;
+    display: grid; place-items: center;
+    background: radial-gradient(120% 120% at 50% 20%, var(--surface-2), var(--bg-2));
+    border: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 18px 40px -18px #000;
+    transition: transform .25s, border-color .4s, box-shadow .4s;
+}
+.power-icon { width: calc(var(--pw) * .32); height: calc(var(--pw) * .32); fill: none;
+    stroke: var(--c); stroke-width: 2; stroke-linecap: round; transition: stroke .4s; }
+.power:hover .power-core { transform: scale(1.02); }
+.power:active .power-core { transform: scale(.97); }
+.power:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.power[data-state="off"]        { --c: var(--off); }
+.power[data-state="connecting"] { --c: var(--warn); }
+.power[data-state="connecting"] .power-ring { opacity: 1; animation: spin 1.1s linear infinite; }
+.power[data-state="connected"]  { --c: var(--accent); }
+.power[data-state="connected"] .power-ring { opacity: 1; animation: spin 6s linear infinite; }
+.power[data-state="connected"] .power-core {
+    border-color: var(--accent-2);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 40px -8px rgba(52,224,161,.5), 0 18px 40px -18px #000;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── метрики (только в подключённом состоянии) ─── */
+.metrics { display: none; }
+body[data-state="connected"] .metrics {
+    display: grid; grid-template-columns: auto auto; gap: 4px 18px;
+    justify-items: end; align-items: baseline;
+}
+.metric { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.metric.total { grid-column: 1 / -1; }
+.metric-label { font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--text-mute); white-space: nowrap; }
+.metric-value { font-family: var(--mono); font-size: 15px; font-weight: 500;
+    color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.metric.total .metric-value { font-size: 11.5px; color: var(--text-dim); }
+
+/* ─── вкладки ─── */
+.tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); }
+.tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--text-mute); font-family: var(--sans); font-size: 11.5px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; padding: 7px 12px 8px; cursor: pointer;
+    transition: color .2s, border-color .2s;
+}
+.tab:hover { color: var(--text-dim); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.tabs-hint { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--text-mute); }
+
+/* ─── панели-вкладки ─── */
+.pane { min-height: 0; display: none; }
+.pane.active { display: flex; flex-direction: column; }
+.pane-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-gutter: stable; padding-right: 2px; display: flex; flex-direction: column; gap: 10px; }
+.pane-body::-webkit-scrollbar { width: 9px; }
+.pane-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 9px; }
+.pane-body::-webkit-scrollbar-thumb:hover { background: var(--surface-2); }
+
+/* Две колонки: слева поля, справа многострочный ввод во всю высоту. */
+.pane-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-auto-rows: min-content; gap: 10px 18px; align-content: start; }
+.pane-split > .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.pane-split > .wide { grid-column: 1 / -1; }
+@media (max-width: 620px) {
+    .pane-split { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ─── поля ─── */
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field.grow { flex: 1; min-height: 0; }
+.field > span { font-size: 12px; color: var(--text-dim); letter-spacing: .025em; }
+.field > span em { color: var(--text-mute); font-style: normal; font-size: 10.5px; }
+.field input, .field textarea, .field select {
+    width: 100%; background: var(--bg-2); border: 1px solid var(--line);
+    border-radius: 9px; padding: 9px 11px; color: var(--text);
+    font-family: var(--mono); font-size: 13px; line-height: 1.45; outline: none;
+    transition: border-color .2s, box-shadow .2s; resize: none; user-select: text;
+}
+.field.grow textarea { flex: 1; min-height: 96px; max-height: 100%; resize: none; }
+.field textarea { min-height: 76px; }
+.field input::placeholder, .field textarea::placeholder { color: var(--text-mute); }
+.field input:focus, .field textarea:focus, .field select:focus,
+.field input:focus-visible, .field textarea:focus-visible, .field select:focus-visible {
+    border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(52,224,161,.1);
+}
+.row { display: flex; gap: 10px; align-items: flex-end; }
+.field.small { flex: 0 0 96px; }
+.field.small input { text-align: center; }
+.hint { margin: -2px 0 0; font-size: 10.5px; color: var(--text-mute); line-height: 1.4; }
+
+/* переключатель: чекбокс визуально скрыт, но остаётся в порядке табуляции —
+   display:none отбирал у «Системного VPN» и «Автозапуска» доступ с клавиатуры */
+.toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+.toggle input {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.toggle .track { width: 40px; height: 23px; border-radius: 99px; background: var(--surface-2);
+    border: 1px solid var(--line); position: relative; transition: background .25s, border-color .25s; flex: none; }
+.toggle .thumb { position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+    border-radius: 50%; background: var(--text-mute); transition: transform .25s, background .25s; }
+.toggle input:checked + .track { background: rgba(52,224,161,.2); border-color: var(--accent-2); }
+.toggle input:checked + .track .thumb { transform: translateX(17px); background: var(--accent); }
+.toggle input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle-text { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column;
+    line-height: 1.3; min-width: 0; }
+.toggle-text em { font-style: normal; font-size: 10px; color: var(--text-mute); }
+
+.tunnel-mode { display: flex; align-items: center; gap: 10px; color: var(--text-dim); }
+.tunnel-mode > svg { width: 26px; height: 26px; padding: 5px; flex: none;
+    fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round;
+    stroke-linejoin: round; border: 1px solid var(--accent-2); border-radius: 8px;
+    background: rgba(55,230,176,.08); }
+.tunnel-mode > span { display: flex; flex-direction: column; font-size: 12px; line-height: 1.35; }
+.tunnel-mode em { color: var(--text-mute); font-size: 10px; font-style: normal; }
+
+/* ─── журнал ─── */
+.log-bar { display: flex; align-items: center; gap: 8px; flex: none; }
+.ghost-btn {
+    background: var(--surface-2); color: var(--text-dim);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px;
+    font-family: var(--sans); font-size: 11.5px; font-weight: 600;
+    letter-spacing: .02em; cursor: pointer; transition: border-color .2s, color .2s;
+}
+.ghost-btn:hover { border-color: var(--accent-2); color: var(--accent); }
+.ghost-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.follow { margin-left: auto; display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text-mute); cursor: pointer; }
+.follow input { accent-color: var(--accent-2); }
+
+#logPanel .pane-body { overflow: hidden; gap: 8px; }
+.log { margin: 0; flex: 1; min-height: 0; overflow-y: auto; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-dim);
+    white-space: pre-wrap; word-break: break-word; user-select: text; }
+.log::-webkit-scrollbar { width: 9px; }
+.log::-webkit-scrollbar-thumb { background: var(--line); border-radius: 9px; }
+.log .err { color: var(--danger); }
+.log .ok { color: var(--accent); }
+.log .warn { color: var(--warn); }
+.log em { color: var(--text-mute); font-style: normal; }
+
+/* ─── профили ─── */
+.profile-row { display: flex; gap: 6px; align-items: stretch; min-width: 0; }
+.profile-row select {
+    flex: 1 1 40%; min-width: 0; background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 9px;
+    font-family: var(--sans); font-size: 12.5px; outline: none;
+}
+.profile-row input {
+    flex: 1 1 40%; min-width: 0; background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 9px;
+    font-family: var(--mono); font-size: 12.5px; outline: none; user-select: text;
+}
+.profile-row select:focus-visible, .profile-row input:focus-visible { border-color: var(--accent-2); }
+.profile-row button {
+    flex: none; width: 34px; background: var(--surface-2); color: var(--text-dim);
+    border: 1px solid var(--line); border-radius: 9px; cursor: pointer; font-size: 13px;
+    transition: border-color .2s, color .2s;
+}
+.profile-row button svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.profile-row button:hover { border-color: var(--accent-2); color: var(--accent); }
+.profile-row button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Кольцо и мигание крутятся всю сессию — уважаем системную настройку. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+}

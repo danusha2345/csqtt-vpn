@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2337e6b0' d='m12 2 10 10-10 10L2 12z'/%3E%3C/svg%3E"/>
+    <title>CSQTT VPN</title>
+</head>
+<body data-state="off">
+<div class="grain" aria-hidden="true"></div>
+<div class="glow" aria-hidden="true"></div>
+
+<main class="app" id="app">
+    <header class="topbar">
+        <div class="brand">
+			<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="brand-name">CSQTT<span class="brand-dim">·VPN</span></span>
+        </div>
+        <div class="topbar-right">
+			<span class="platform" id="platform">DESKTOP</span>
+            <span class="uptime" id="uptime"></span>
+            <div class="conn-dot" id="connDot" data-state="off"></div>
+        </div>
+    </header>
+
+    <!-- Док: в «отключено» высокий и центрированный, при подключении схлопывается
+         в горизонтальную приборную полосу со статусом и трафиком. -->
+    <section class="dock" id="dock">
+        <button class="power" id="power" type="button" data-state="off" aria-label="Подключить">
+            <span class="power-ring"></span>
+            <span class="power-core">
+                <svg viewBox="0 0 24 24" class="power-icon" aria-hidden="true">
+                    <path d="M12 3v9"/>
+                    <path d="M6.6 6.8a8 8 0 1 0 10.8 0"/>
+                </svg>
+            </span>
+        </button>
+        <div class="dock-info">
+            <div class="status" id="status" role="status">Отключено</div>
+            <div class="status-sub" id="statusSub">нажми, чтобы подключиться</div>
+            <div class="log-tail" id="logTail" aria-hidden="true"></div>
+        </div>
+        <div class="metrics" id="metrics">
+            <div class="metric">
+                <span class="metric-label">↓ приём</span>
+                <span class="metric-value" id="downRate">—</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">↑ отдача</span>
+                <span class="metric-value" id="upRate">—</span>
+            </div>
+            <div class="metric total">
+                <span class="metric-label">за сессию</span>
+                <span class="metric-value" id="totals">↓ 0 Б · ↑ 0 Б</span>
+            </div>
+        </div>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="Разделы">
+        <button class="tab" type="button" role="tab" id="tabConnect" data-pane="connectPane"
+                aria-controls="connectPane" aria-selected="true">Подключение</button>
+        <button class="tab" type="button" role="tab" id="tabSettings" data-pane="settings"
+                aria-controls="settings" aria-selected="false">Настройки</button>
+        <button class="tab" type="button" role="tab" id="tabLog" data-pane="logPanel"
+                aria-controls="logPanel" aria-selected="false">Журнал</button>
+        <span class="tabs-hint" aria-hidden="true">ctrl+1…3</span>
+    </nav>
+
+    <!-- Панели — обычные секции, а не <details>: Chromium заворачивает содержимое
+         details в анонимный ::details-content, и внутренний скролл переставал
+         ограничиваться высотой окна — панель уезжала за нижний край. -->
+    <section class="pane active" id="connectPane" role="tabpanel" aria-labelledby="tabConnect">
+		<form class="pane-body pane-split" id="connectionForm">
+            <div class="col">
+                <label class="field">
+                    <span>Профиль</span>
+                    <div class="profile-row">
+                        <select id="profileSel"><option value="">— текущий —</option></select>
+                        <input id="profileName" type="text" spellcheck="false" placeholder="имя"/>
+						<button id="profileSave" type="button" title="Сохранить профиль" aria-label="Сохранить профиль">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5zM8 4v6h8V4M8 20v-6h8v6"/></svg>
+						</button>
+						<button id="profileDel" type="button" title="Удалить профиль" aria-label="Удалить профиль">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3M8 7l1 13h6l1-13M10 10v7M14 10v7"/></svg>
+						</button>
+                    </div>
+                </label>
+                <label class="field">
+                    <span>Сервер</span>
+                    <input id="server" type="text" spellcheck="false" placeholder="IP-сервера:46010"/>
+                </label>
+                <label class="field">
+                    <span>Пароль туннеля</span>
+					<input id="password" type="password" autocomplete="current-password" spellcheck="false" placeholder="••••••••"/>
+                </label>
+            </div>
+            <div class="col">
+                <label class="field grow">
+					<span>VK-ссылки <em>(по одной на строку, до 6)</em></span>
+                    <textarea id="vk" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
+                </label>
+            </div>
+			<div class="tunnel-mode wide" role="note">
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.6-2.8 8-7 10-4.2-2-7-5.4-7-10V6zM9 12l2 2 4-5"/></svg>
+				<span>Системный туннель<em>IPv4 через CSQTT · защита от утечки IPv6</em></span>
+			</div>
+		</form>
+    </section>
+
+    <section class="pane" id="settings" role="tabpanel" aria-labelledby="tabSettings">
+        <div class="pane-body pane-split">
+            <div class="col">
+                <div class="row">
+                    <label class="field small">
+                        <span>Воркеров</span>
+                        <input id="workers" type="number" min="9" max="126" step="9" value="18"/>
+                    </label>
+                    <label class="field">
+                        <span>Маскировка</span>
+                        <select id="obfsMode">
+                            <option value="audio">Аудио</option>
+                            <option value="video">Видео</option>
+                        </select>
+                    </label>
+                    <label class="field">
+						<span>Транспорт TURN</span>
+                        <select id="turnTransport">
+                            <option value="udp">UDP</option>
+                            <option value="tcp_tls">TCP/TLS</option>
+                        </select>
+                    </label>
+                </div>
+                <p class="hint">Ядро округляет число воркеров вниз до кратного 9 (от 9 до 126).</p>
+                <label class="toggle">
+                    <input id="autostart" type="checkbox"/>
+                    <span class="track"><span class="thumb"></span></span>
+					<span class="toggle-text">Автозапуск<em>при входе в систему</em></span>
+                </label>
+            </div>
+            <div class="col">
+                <label class="field grow">
+					<span>Исключения <em>(домены, IP и подсети напрямую)</em></span>
+                    <textarea id="excludes" spellcheck="false" placeholder="example.com&#10;192.168.0.0/16"></textarea>
+                </label>
+            </div>
+        </div>
+    </section>
+
+    <section class="pane" id="logPanel" role="tabpanel" aria-labelledby="tabLog">
+        <div class="pane-body">
+            <div class="log-bar">
+                <button class="ghost-btn" id="diag" type="button">🩺 Диагностика сети</button>
+                <button class="ghost-btn" id="logCopy" type="button">⧉ Копировать</button>
+                <label class="follow">
+                    <input id="logFollow" type="checkbox" checked/>
+                    <span>автоскролл</span>
+                </label>
+            </div>
+            <pre class="log" id="log"></pre>
+        </div>
+    </section>
+</main>
+
+<script src="./src/main.js" type="module"></script>
+</body>
+</html>
