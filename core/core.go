@@ -50,6 +50,7 @@ type Manager struct {
 	runDir string
 
 	mu           sync.Mutex
+	routeMu      sync.Mutex
 	client       *exec.Cmd
 	clientIn     io.WriteCloser
 	bridge       bridgeController
@@ -312,10 +313,16 @@ func (m *Manager) handleEvent(line string) {
 func parseTunnelConfig(value string) (tunnelConfig, bool) {
 	value = strings.TrimPrefix(value, "TUNCONF:")
 	parts := strings.SplitN(value, ":", 3)
-	if len(parts) < 2 || net.ParseIP(parts[0]).To4() == nil || net.ParseIP(parts[1]).To4() == nil {
+	if len(parts) < 2 || net.ParseIP(parts[0]).To4() == nil {
 		return tunnelConfig{}, false
 	}
-	return tunnelConfig{IP: parts[0], DNS: parts[1]}, true
+	for _, candidate := range strings.Split(parts[1], ",") {
+		dns := strings.TrimSpace(candidate)
+		if net.ParseIP(dns).To4() != nil {
+			return tunnelConfig{IP: parts[0], DNS: dns}, true
+		}
+	}
+	return tunnelConfig{}, false
 }
 
 func (m *Manager) waitClient(cmd *exec.Cmd, exit chan struct{}) {

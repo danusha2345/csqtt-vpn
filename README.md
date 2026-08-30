@@ -9,7 +9,7 @@ Android-клиент и сервер нашей сборки: [`danusha2345/csqt
 Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle синхронизирована с core: **2.1.7**. Каждый пользователь
+Версия desktop bundle синхронизирована с core: **2.1.8**. Каждый пользователь
 вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура
@@ -47,11 +47,13 @@ Windows:
 ```text
 CSQTT-VPN.exe
 bin/csqtt-client.exe
-bin/wintun.dll
+wintun.dll
 ```
 
 Нужны Windows 10/11 и WebView2 Runtime. `CSQTT-VPN.exe` содержит manifest
-`requireAdministrator`.
+`requireAdministrator`. `wintun.dll` должен находиться именно рядом с
+`CSQTT-VPN.exe`: библиотека Wintun загружается из каталога приложения, а не из
+подкаталога `bin`.
 
 Linux:
 
