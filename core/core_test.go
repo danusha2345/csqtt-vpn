@@ -25,6 +25,13 @@ func TestParseTunnelConfig(t *testing.T) {
 	if _, ok := parseTunnelConfig("TUNCONF:bad:1.1.1.1"); ok {
 		t.Fatal("invalid config accepted")
 	}
+	multiple, ok := parseTunnelConfig("TUNCONF:10.66.67.3:1.1.1.1,8.8.8.8:19000")
+	if !ok || multiple.IP != "10.66.67.3" || multiple.DNS != "1.1.1.1" {
+		t.Fatalf("multiple DNS config=%+v ok=%v", multiple, ok)
+	}
+	if _, ok := parseTunnelConfig("TUNCONF:10.66.67.3:bad,also-bad:19000"); ok {
+		t.Fatal("invalid DNS list accepted")
+	}
 }
 
 func TestDecodeCommandOutputRepairsWindowsOEM866(t *testing.T) {
