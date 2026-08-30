@@ -26,3 +26,13 @@ func TestParseTunnelConfig(t *testing.T) {
 		t.Fatal("invalid config accepted")
 	}
 }
+
+func TestDecodeCommandOutputRepairsWindowsOEM866(t *testing.T) {
+	encoded := []byte{0x8f, 0xe0, 0xa8, 0xa2, 0xa5, 0xe2}
+	if got := decodeCommandOutput(encoded); got != "Привет" {
+		t.Fatalf("decoded=%q", got)
+	}
+	if got := decodeCommandOutput([]byte("UTF-8 ✓")); got != "UTF-8 ✓" {
+		t.Fatalf("utf8=%q", got)
+	}
+}
