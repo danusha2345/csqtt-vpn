@@ -46,9 +46,7 @@ func (a *App) VersionInfo() VersionInfo {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	coreVersion := core.ClientVersion(ctx, filepath.Join(binDir(), name))
+	coreVersion := bundledCoreIdentity(filepath.Join(binDir(), name))
 	return VersionInfo{desktopVersion(), coreVersion, "danusha2345/csqtt-android 2.1.11; CSQPX2. Upstream amurcanov/csqtt 2.1.9 несовместим."}
 }
 func (a *App) UpdateReady() { updater.Acknowledge(desktopVersion()) }

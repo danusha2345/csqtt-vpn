@@ -21,6 +21,23 @@ func TestServerDNSIsUsedAndInvalidAddressRejected(t *testing.T) {
 	}
 }
 
+func TestDNSImmediateStopClosesBothListeners(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		m := NewManager("", "", nil, nil)
+		if err := m.startDNS("127.0.0.1:0", nil, "", "1.1.1.1"); err != nil {
+			t.Fatal(err)
+		}
+		p := m.dns
+		m.stopDNS()
+		if err := p.udp.PacketConn.Close(); err == nil {
+			t.Fatal("UDP listener survived shutdown")
+		}
+		if err := p.tcp.Listener.Close(); err == nil {
+			t.Fatal("TCP listener survived shutdown")
+		}
+	}
+}
+
 func TestDNSRetriesTruncatedUDPOverTCP(t *testing.T) {
 	tcp, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -17,7 +17,7 @@ func (m *Manager) stopSystemRouting() {}
 
 func (m *Manager) excludeHost(ip string) {}
 
-func (m *Manager) cleanupStale() {}
+func (m *Manager) cleanupStale(ctx context.Context) {}
 
 func (m *Manager) Stats() (down, up int64, ok bool) { return 0, 0, false }
 

@@ -41,15 +41,6 @@ type tunnelConfig struct {
 	DNS string
 }
 
-func installIPv6Guard(apply func(string) error) error {
-	for _, prefix := range []string{"::/1", "8000::/1"} {
-		if err := apply(prefix); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 type bridgeController interface {
 	Close() error
 }
@@ -188,7 +179,12 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(m.runDir, 0o700); err != nil {
 		return fmt.Errorf("runDir: %w", err)
 	}
-	m.cleanupStale()
+	started := time.Now()
+	m.cleanupStale(ctx)
+	m.log("[STARTUP] cleanup: %s", time.Since(started))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.platformPreflight(); err != nil {
 		return err
 	}
@@ -245,6 +241,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	var assigned tunnelConfig
 	select {
 	case assigned = <-m.configCh:
+		m.log("[STARTUP] first CONFIG: %s", time.Since(started))
 	case <-exitCh:
 		return fmt.Errorf("csqtt-client завершился до TUNCONF")
 	case <-ctx.Done():
@@ -253,10 +250,20 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("сервер не выдал TUNCONF за %s", configWait)
 	}
 	host, _, _ := net.SplitHostPort(strings.TrimSpace(cfg.Server))
-	if err := m.startSystemRouting(ctx, host, cfg.Excludes, assigned); err != nil {
+	setupCtx, stopSetup := context.WithCancel(ctx)
+	defer stopSetup()
+	go func() {
+		select {
+		case <-exitCh:
+			stopSetup()
+		case <-setupCtx.Done():
+		}
+	}()
+	if err := m.startSystemRouting(setupCtx, host, cfg.Excludes, assigned); err != nil {
 		m.Disconnect()
 		return err
 	}
+	m.log("[STARTUP] routing ready: %s", time.Since(started))
 	m.failSafeOnExit(exitCh)
 	m.log("✅ CSQTT system VPN активен: %s, DNS %s", assigned.IP, assigned.DNS)
 	return nil

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -77,6 +76,7 @@ type packetBridge struct {
 	closing atomic.Bool
 	onError func(error)
 	wg      sync.WaitGroup
+	traffic trafficCounters
 }
 
 func newPacketBridge(remote string, onError func(error)) (*packetBridge, error) {
@@ -131,6 +131,7 @@ func (b *packetBridge) tunToUDP() {
 				b.fail(err)
 				return
 			}
+			b.traffic.up.Add(int64(sizes[i]))
 		}
 	}
 }
@@ -146,9 +147,13 @@ func (b *packetBridge) udpToTUN() {
 		}
 		if n > 0 {
 			packet := [][]byte{buf[:n]}
-			if _, err := b.device.Write(packet, 0); err != nil {
+			written, err := b.device.Write(packet, 0)
+			if err != nil {
 				b.fail(err)
 				return
+			}
+			if written == 1 {
+				b.traffic.down.Add(int64(n))
 			}
 		}
 	}
@@ -165,16 +170,11 @@ func (b *packetBridge) Close() error {
 }
 
 func runHidden(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	hideConsole(cmd)
-	out, err := cmd.CombinedOutput()
-	decoded := decodeCommandOutput(out)
-	if ctx.Err() == context.DeadlineExceeded {
-		return decoded, fmt.Errorf("%s: timeout после %s", name, commandTimeout)
-	}
-	return decoded, err
+	return runHiddenContext(context.Background(), name, args...)
+}
+
+func runHiddenContext(parent context.Context, name string, args ...string) (string, error) {
+	return runCommandContext(parent, commandTimeout, name, args...)
 }
 
 type packetBridgeResult struct {
@@ -214,7 +214,7 @@ func closeLatePacketBridge(result <-chan packetBridgeResult) {
 	}
 }
 
-func installManagedNRPT(nameServer string) error {
+func installManagedNRPT(ctx context.Context, nameServer string) error {
 	ps := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
@@ -224,21 +224,16 @@ $rule = Add-DnsClientNrptRule -Namespace '.' -NameServers '%s' -DisplayName '%s'
 if ($null -eq $rule -or $rule.NameServers -notcontains '%s') { throw 'NRPT verification failed' }
 Clear-DnsClientCache -ErrorAction SilentlyContinue
 `, nrptDisplayName, nrptComment, nameServer, nrptDisplayName, nrptComment, nameServer)
-	out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	out, err := runHiddenContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	if err != nil {
 		return fmt.Errorf("NRPT %s: %w: %s", nameServer, err, strings.TrimSpace(out))
 	}
 	return nil
 }
 
-func removeManagedNRPT() {
-	ps := fmt.Sprintf(`Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq '%s' -or $_.Comment -eq '%s' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }; Clear-DnsClientCache -ErrorAction SilentlyContinue`, nrptDisplayName, nrptComment)
-	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
-}
-
-func physDefault() (gw, ifIndex string, err error) {
+func physDefault(ctx context.Context) (gw, ifIndex string, err error) {
 	ps := `$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {$_.NextHop -ne '0.0.0.0'} | Sort-Object RouteMetric | Select-Object -First 1; "$($r.NextHop) $($r.InterfaceIndex)"`
-	out, e := runHidden("powershell", "-NoProfile", "-Command", ps)
+	out, e := runHiddenContext(ctx, "powershell", "-NoProfile", "-Command", ps)
 	if e != nil {
 		return "", "", fmt.Errorf("Get-NetRoute: %v: %s", e, out)
 	}
@@ -249,9 +244,9 @@ func physDefault() (gw, ifIndex string, err error) {
 	return fields[0], fields[1], nil
 }
 
-func physDNS(ifIndex string) string {
+func physDNS(ctx context.Context, ifIndex string) string {
 	ps := fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Select-Object -First 1`, ifIndex)
-	out, _ := runHidden("powershell", "-NoProfile", "-Command", ps)
+	out, _ := runHiddenContext(ctx, "powershell", "-NoProfile", "-Command", ps)
 	return strings.TrimSpace(out)
 }
 
@@ -264,7 +259,7 @@ func cidrToRoute(cidr string) (string, string, error) {
 	return network.IP.String(), mask, nil
 }
 
-func (m *Manager) setBypassRoute(network, mask, gw string) error {
+func (m *Manager) setBypassRoute(ctx context.Context, network, mask, gw string) error {
 	m.routeMu.Lock()
 	defer m.routeMu.Unlock()
 	key := network + " mask " + mask
@@ -274,7 +269,7 @@ func (m *Manager) setBypassRoute(network, mask, gw string) error {
 		return nil
 	}
 	m.mu.Unlock()
-	out, err := runHidden("route", "add", network, "mask", mask, gw, "metric", "1")
+	out, err := runHiddenContext(ctx, "route", "add", network, "mask", mask, gw, "metric", "1")
 	if err != nil {
 		if routeAlreadyExists(out) {
 			return nil
@@ -287,20 +282,14 @@ func (m *Manager) setBypassRoute(network, mask, gw string) error {
 	return nil
 }
 
-func (m *Manager) cleanupStale() {
-	target := strings.ReplaceAll(m.exe(platformClientName()), "'", "''")
-	ps := fmt.Sprintf(`$target = '%s'; Get-CimInstance Win32_Process -Filter "Name='csqtt-client.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`, target)
-	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
-	removeManagedNRPT()
-	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
-		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
-		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
-	}
+func (m *Manager) cleanupStale(ctx context.Context) {
+	_, _ = runHiddenContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		windowsCleanupScript(m.exe(platformClientName()), tunName, nrptDisplayName, nrptComment))
 }
 
 func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCSV string, assigned tunnelConfig) error {
 	m.log("• Определяю физический маршрут Windows…")
-	gw, ifIndex, err := physDefault()
+	gw, ifIndex, err := physDefault(ctx)
 	if err != nil {
 		return err
 	}
@@ -312,14 +301,14 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if serverIP == "" {
 		return fmt.Errorf("не разрешён адрес сервера %s", serverHost)
 	}
-	if err := m.setBypassRoute(serverIP, "255.255.255.255", gw); err != nil {
+	if err := m.setBypassRoute(ctx, serverIP, "255.255.255.255", gw); err != nil {
 		return fmt.Errorf("bypass-route сервера %s: %w", serverIP, err)
 	}
 	m.log("• Добавляю bypass-маршруты сервера и TURN…")
 	for _, cidr := range bypassCIDRs {
 		network, mask, parseErr := cidrToRoute(cidr)
 		if parseErr == nil {
-			if err := m.setBypassRoute(network, mask, gw); err != nil {
+			if err := m.setBypassRoute(ctx, network, mask, gw); err != nil {
 				return fmt.Errorf("bypass-route %s: %w", cidr, err)
 			}
 		}
@@ -331,7 +320,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	}
 	m.mu.Unlock()
 	for _, ip := range turn {
-		if err := m.addBypassHost(ip); err != nil {
+		if err := m.addBypassHost(ctx, ip); err != nil {
 			return fmt.Errorf("bypass-route TURN relay %s: %w", ip, err)
 		}
 	}
@@ -345,12 +334,12 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		}
 		if strings.Contains(value, "/") {
 			if network, mask, e := cidrToRoute(value); e == nil {
-				if err := m.setBypassRoute(network, mask, gw); err != nil {
+				if err := m.setBypassRoute(ctx, network, mask, gw); err != nil {
 					return fmt.Errorf("bypass-route %s: %w", value, err)
 				}
 			}
 		} else if net.ParseIP(value) != nil {
-			if err := m.addBypassHost(value); err != nil {
+			if err := m.addBypassHost(ctx, value); err != nil {
 				return fmt.Errorf("bypass-route %s: %w", value, err)
 			}
 		} else {
@@ -371,55 +360,47 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	m.mu.Lock()
 	m.bridge = bridge
 	m.mu.Unlock()
-	if err := m.waitAdapter(ctx, tunName, 12*time.Second); err != nil {
+	tunIndex, err := m.waitAdapter(ctx, tunName, 12*time.Second)
+	if err != nil {
 		return err
 	}
 	m.log("✓ Адаптер Wintun %s создан", tunName)
-	idxOut, _ := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf("(Get-NetAdapter -Name '%s').ifIndex", tunName))
-	tunIndex := strings.TrimSpace(idxOut)
-	if tunIndex == "" {
-		return fmt.Errorf("не определён ifIndex адаптера %s", tunName)
-	}
-	if out, e := runHidden("netsh", "interface", "ipv4", "set", "address", "name="+tunName, "static", assigned.IP, "255.255.255.0"); e != nil {
+	if out, e := runHiddenContext(ctx, "netsh", "interface", "ipv4", "set", "address", "name="+tunName, "static", assigned.IP, "255.255.255.0"); e != nil {
 		return fmt.Errorf("IP адаптера: %v: %s", e, out)
 	}
-	_, _ = runHidden("netsh", "interface", "ipv4", "set", "interface", tunName, "metric=1")
-	time.Sleep(500 * time.Millisecond)
+	_, _ = runHiddenContext(ctx, "netsh", "interface", "ipv4", "set", "interface", tunName, "metric=1")
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	// Активируем split routes до DNS-proxy/NRPT. Поэтому его публичный UDP
 	// upstream уже идёт внутри CSQTT, а не напрямую через ТСПУ клиента.
 	m.routeMu.Lock()
-	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
-		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
-		if out, e := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps); e != nil {
-			m.routeMu.Unlock()
-			return fmt.Errorf("split route %s: %v: %s", prefix, e, out)
-		}
-	}
-	if err := installIPv6Guard(func(prefix string) error {
-		ps := fmt.Sprintf(`$ErrorActionPreference = 'Stop'; New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
-		if out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps); err != nil {
-			return fmt.Errorf("IPv6 leak guard %s: %w: %s", prefix, err, out)
-		}
-		return nil
-	}); err != nil {
+	script, err := windowsSplitScript(tunIndex)
+	if err != nil {
 		m.routeMu.Unlock()
 		return err
+	}
+	if out, err := runHiddenContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
+		m.routeMu.Unlock()
+		return fmt.Errorf("split routes / IPv6 guard: %w: %s", err, out)
 	}
 	m.routeMu.Unlock()
 	m.log("✓ Системные маршруты направлены в CSQTT")
 
-	bypassUpstream := physDNS(ifIndex)
+	bypassUpstream := physDNS(ctx, ifIndex)
 	if bypassUpstream != "" {
 		bypassUpstream += ":53"
 	}
 	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream, assigned.DNS); err != nil {
 		return err
 	}
-	if out, e := runHidden("netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {
+	if out, e := runHiddenContext(ctx, "netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {
 		return fmt.Errorf("DNS адаптера: %v: %s", e, out)
 	}
-	if err := installManagedNRPT(assigned.IP); err != nil {
+	if err := installManagedNRPT(ctx, assigned.IP); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -448,29 +429,31 @@ func (m *Manager) bridgeFailed(err error) {
 	}
 }
 
-func (m *Manager) waitAdapter(ctx context.Context, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, _ := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf("if (Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue) { 'ok' }", name))
-		if strings.Contains(out, "ok") {
-			return nil
+func (m *Manager) waitAdapter(ctx context.Context, name string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		out, err := runHiddenContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf("(Get-NetAdapter -Name %s -ErrorAction SilentlyContinue).ifIndex", psQuote(name)))
+		index := strings.TrimSpace(out)
+		if n, parseErr := strconv.ParseUint(index, 10, 32); err == nil && parseErr == nil && n > 0 {
+			return index, nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", fmt.Errorf("адаптер %s: %w", name, ctx.Err())
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("адаптер %s не появился", name)
 }
 
 func (m *Manager) excludeHost(ip string) {
-	if err := m.addBypassHost(ip); err != nil {
+	if err := m.addBypassHost(context.Background(), ip); err != nil {
 		m.log("⚠ bypass %s не добавлен: %v", ip, err)
 	}
 }
 
-func (m *Manager) addBypassHost(ip string) error {
+func (m *Manager) addBypassHost(ctx context.Context, ip string) error {
 	m.mu.Lock()
 	gw := m.physGW
 	already := m.routes[ip+" mask 255.255.255.255"]
@@ -478,7 +461,7 @@ func (m *Manager) addBypassHost(ip string) error {
 	if gw == "" || ip == "" || already {
 		return nil
 	}
-	if err := m.setBypassRoute(ip, "255.255.255.255", gw); err != nil {
+	if err := m.setBypassRoute(ctx, ip, "255.255.255.255", gw); err != nil {
 		return err
 	}
 	m.log("  + bypass %s", ip)
@@ -486,7 +469,7 @@ func (m *Manager) addBypassHost(ip string) error {
 }
 
 func (m *Manager) stopSystemRouting() {
-	removeManagedNRPT()
+	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", windowsCleanupScript("", tunName, nrptDisplayName, nrptComment))
 	m.stopDNS()
 	m.routeMu.Lock()
 	m.mu.Lock()
@@ -500,10 +483,6 @@ func (m *Manager) stopSystemRouting() {
 	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
-	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
-		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
-		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
-	}
 	for route := range routes {
 		parts := strings.SplitN(route, " mask ", 2)
 		if len(parts) == 2 {
@@ -518,20 +497,12 @@ func (m *Manager) stopSystemRouting() {
 
 func (m *Manager) Stats() (down, up int64, ok bool) {
 	m.mu.Lock()
+	bridge, isBridge := m.bridge.(*packetBridge)
 	active := m.sysActive
 	m.mu.Unlock()
-	if !active {
+	if !active || !isBridge || bridge == nil {
 		return 0, 0, false
 	}
-	out, err := runHidden("powershell", "-NoProfile", "-Command", fmt.Sprintf(`$s = Get-NetAdapterStatistics -Name '%s' -ErrorAction SilentlyContinue; "$($s.ReceivedBytes) $($s.SentBytes)"`, tunName))
-	if err != nil {
-		return 0, 0, false
-	}
-	fields := strings.Fields(strings.TrimSpace(out))
-	if len(fields) < 2 {
-		return 0, 0, false
-	}
-	down, err1 := strconv.ParseInt(fields[0], 10, 64)
-	up, err2 := strconv.ParseInt(fields[1], 10, 64)
-	return down, up, err1 == nil && err2 == nil
+	down, up = bridge.traffic.snapshot()
+	return down, up, true
 }

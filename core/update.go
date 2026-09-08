@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 )
 
 // DisconnectForUpdate ждёт Wait процесса и подтверждает очистку перед заменой EXE.
@@ -39,12 +37,3 @@ func (m *Manager) DisconnectForUpdate(ctx context.Context) error {
 }
 
 func VerifyUpdateCleanup(ctx context.Context) error { return verifyUpdateCleanup(ctx, nil, "") }
-func ClientVersion(ctx context.Context, path string) string {
-	cmd := exec.CommandContext(ctx, path, "--version")
-	hideConsole(cmd)
-	out, e := cmd.Output()
-	if e != nil || len(out) > 4096 {
-		return "не удалось прочитать --version"
-	}
-	return strings.TrimSpace(string(out))
-}

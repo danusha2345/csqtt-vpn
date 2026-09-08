@@ -18,7 +18,7 @@ import (
 // туннеля ДО того, как приложение подключится. Остальное резолвится через VPN.
 const (
 	dnsBypassFallback = "77.88.8.8:53" // Yandex (в bypassCIDRs → мимо VPN), если физ. DNS неизвестен
-	dnsCacheMin       = 10 * time.Second
+	dnsCacheEntries   = 1024
 	dnsCacheMax       = 300 * time.Second
 )
 
@@ -99,20 +99,34 @@ func (m *Manager) startDNS(listenAddr string, domains []string, bypassUpstream, 
 	p.udp = &dns.Server{PacketConn: pc, Handler: h}
 	p.tcp = &dns.Server{Listener: l, Handler: h}
 
+	// Shutdown must not race ActivateAndServe's startup flag on a fast cancel.
+	start := func(server *dns.Server) error {
+		ready := make(chan error, 1)
+		var once sync.Once
+		signal := func(err error) { once.Do(func() { ready <- err }) }
+		server.NotifyStartedFunc = func() { signal(nil) }
+		go func() {
+			err := server.ActivateAndServe()
+			signal(err)
+			if err != nil {
+				m.log("[DNS] serve: %v", err)
+			}
+		}()
+		return <-ready
+	}
+	if err := start(p.udp); err != nil {
+		_ = pc.Close()
+		_ = l.Close()
+		return err
+	}
+	if err := start(p.tcp); err != nil {
+		_ = p.udp.Shutdown()
+		_ = l.Close()
+		return err
+	}
 	m.mu.Lock()
 	m.dns = p
 	m.mu.Unlock()
-
-	go func() {
-		if e := p.udp.ActivateAndServe(); e != nil {
-			m.log("[DNS] udp: %v", e)
-		}
-	}()
-	go func() {
-		if e := p.tcp.ActivateAndServe(); e != nil {
-			m.log("[DNS] tcp: %v", e)
-		}
-	}()
 	m.log("• DNS-перехват на %s (обход доменов: %d)", listenAddr, len(p.excludes))
 	return nil
 }
@@ -153,8 +167,9 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 	// Кэш: повторный резолв того же имени не ходит к upstream — режет латентность
 	// открытия страниц (на странице десятки поддоменов). route для bypass уже стоит
 	// с первого ответа, поэтому cache-hit безопасен.
-	key := name + "|" + dns.TypeToString[q.Qtype]
-	if cached := p.cacheGet(key); cached != nil {
+	key := fmt.Sprintf("%s|%d|%d", name, q.Qtype, q.Qclass)
+	cacheable := len(r.Question) == 1 && q.Qclass == dns.ClassINET && r.IsEdns0() == nil && !r.CheckingDisabled
+	if cached := p.cacheGet(key); cacheable && cached != nil {
 		cached.SetReply(r)
 		_ = w.WriteMsg(cached)
 		return
@@ -185,7 +200,9 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 			}
 		}
 	}
-	p.cachePut(key, resp)
+	if cacheable {
+		p.cachePut(key, resp)
+	}
 	_ = w.WriteMsg(resp)
 }
 
@@ -209,31 +226,54 @@ func (p *dnsProxy) cacheGet(key string) *dns.Msg {
 	if !ok {
 		return nil
 	}
-	if time.Now().After(e.expiry) {
+	remaining := time.Until(e.expiry)
+	if remaining < time.Second {
 		delete(p.cache, key)
 		return nil
 	}
-	return e.msg.Copy()
+	answer := e.msg.Copy()
+	for _, section := range [][]dns.RR{answer.Answer, answer.Ns, answer.Extra} {
+		for _, rr := range section {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			if rr.Header().Ttl > uint32(remaining/time.Second) {
+				rr.Header().Ttl = uint32(remaining / time.Second)
+			}
+		}
+	}
+	return answer
 }
 
-// cachePut кэширует успешный непустой ответ на min(TTL ответа), зажатый в
-// [dnsCacheMin, dnsCacheMax]. Ошибки и пустые ответы не кэшируем.
+// Cache lifetime never exceeds upstream TTL. Arbitrary eviction keeps the
+// number of entries bounded with constant work per insertion.
 func (p *dnsProxy) cachePut(key string, resp *dns.Msg) {
-	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 || resp.IsEdns0() != nil {
 		return
 	}
 	ttl := dnsCacheMax
-	for _, ans := range resp.Answer {
-		if t := time.Duration(ans.Header().Ttl) * time.Second; t < ttl {
-			ttl = t
+	for _, section := range [][]dns.RR{resp.Answer, resp.Ns, resp.Extra} {
+		for _, ans := range section {
+			if ans.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			if t := time.Duration(ans.Header().Ttl) * time.Second; t < ttl {
+				ttl = t
+			}
 		}
 	}
-	if ttl < dnsCacheMin {
-		ttl = dnsCacheMin
+	if ttl <= 0 {
+		return
 	}
 	p.cacheMu.Lock()
 	if p.cache == nil {
 		p.cache = map[string]dnsCacheEntry{}
+	}
+	if _, exists := p.cache[key]; !exists && len(p.cache) >= dnsCacheEntries {
+		for oldest := range p.cache {
+			delete(p.cache, oldest)
+			break
+		}
 	}
 	p.cache[key] = dnsCacheEntry{msg: resp.Copy(), expiry: time.Now().Add(ttl)}
 	p.cacheMu.Unlock()

@@ -9,7 +9,7 @@ Android-клиент и сервер нашей сборки: [`danusha2345/csqt
 Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle синхронизирована с core: **2.1.11**. Каждый пользователь
+Версия desktop bundle: **2.1.12**, bundled Rust core: **2.1.11**. Каждый пользователь
 вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура
@@ -125,6 +125,10 @@ Rust core собирается из `rust-client/` репозитория CSQTT:
 cargo build --release --locked --target x86_64-pc-windows-gnu
 cargo zigbuild --release --locked --target x86_64-unknown-linux-musl
 ```
+
+Оптимизации запуска описаны в [WINDOWS_PERFORMANCE.md](docs/WINDOWS_PERFORMANCE.md).
+Updater впервые входит в 2.1.12: эту версию нужно установить вручную целиком;
+последующие стабильные версии проверяются и устанавливаются из приложения.
 
 ## Ограничения проверки
 

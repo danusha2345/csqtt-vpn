@@ -267,7 +267,7 @@ func (m *Manager) excludeHost(ip string) {
 	}
 }
 
-func (m *Manager) cleanupStale() {
+func (m *Manager) cleanupStale(ctx context.Context) {
 	_, _ = exec.Command("resolvectl", "revert", linuxTunName).CombinedOutput()
 	_, _ = runIP("link", "delete", linuxTunName)
 	for _, prefix := range []string{"::/1", "8000::/1"} {
