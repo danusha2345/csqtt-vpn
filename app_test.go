@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -14,6 +15,7 @@ func TestSanitizeProfileName(t *testing.T) {
 
 func TestLoadOrCreateDeviceIDIsStableAndPrivate(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
 	first, err := loadOrCreateDeviceID()
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +35,8 @@ func TestLoadOrCreateDeviceIDIsStableAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports POSIX mode bits as 0666; its access policy is an ACL.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode=%#o", info.Mode().Perm())
 	}
 }

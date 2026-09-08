@@ -126,9 +126,9 @@ README/LICENSE; другие файлы установки не затрагив
 Windows vet, npm audit/build. Playwright проверяет UI с имитацией Wails bindings;
 это отдельная проверка браузерной части, не Windows runtime.
 
-В установленном Wine есть только 32-битный loader; запуск amd64 test EXE
-завершается `Bad EXE format`. Windows runtime, UAC, DACL и реальные блокировки
-файлов в этой среде **не проверены**.
+В Windows CI выполнены нативные тесты блокировки файлов, rollback и DACL stage.
+Полный GUI runtime, UAC, WebView2 restart и TUN/VK E2E на рабочем ПК
+**не проверены**; эти сценарии остаются в матрице ниже.
 
 Матрица проверки на Windows 10/11 (не заменяется cross-compilation):
 
