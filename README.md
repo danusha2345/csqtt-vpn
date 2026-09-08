@@ -9,7 +9,7 @@ Android-клиент и сервер нашей сборки: [`danusha2345/csqt
 Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle синхронизирована с core: **2.1.8**. Каждый пользователь
+Версия desktop bundle синхронизирована с core: **2.1.11**. Каждый пользователь
 вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура
@@ -123,11 +123,11 @@ cargo zigbuild --release --locked --target x86_64-unknown-linux-musl
 
 ## Ограничения проверки
 
-В текущих исходниках исправлены применение DNS из `TUNCONF`, TCP fallback
+В версии `2.1.11` исправлены применение DNS из `TUNCONF`, TCP fallback
 при усечённом DNS-ответе и обработка ошибок Windows IPv6 guard: ошибка теперь
-прерывает подключение с откатом. Эти изменения ещё не включены в опубликованный
-bundle. Для SOCKS5-исправлений transport требуется новая сборка Rust core из
-соседнего `android-server`; файлы `bin/` не обновляются изменением Go-кода.
+прерывает подключение с откатом. Используйте core из того же bundle и сервер
+`danusha2345/csqtt-android`; upstream server `amurcanov/csqtt 2.1.9` имеет другой
+wire protocol и отклоняет подключение с `DENIED:protocol_mismatch`.
 
 Unit/race/cross-compile, frontend audit/build, Wintun PE build, Linux TUN namespace
 и SCM_RIGHTS проверяются локально. Полный TURN e2e требует действующей VK call
