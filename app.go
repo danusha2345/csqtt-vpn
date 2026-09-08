@@ -33,8 +33,12 @@ type Settings struct {
 
 // App — бэкенд Wails.
 type App struct {
-	ctx context.Context
+	ctx      context.Context
+	update   updateState
+	updating bool
+	closing  bool
 
+	lifecycle sync.Mutex
 	mu        sync.Mutex
 	mgr       *core.Manager
 	cancel    context.CancelFunc
@@ -129,15 +133,25 @@ func binDir() string {
 
 // Connect запускает туннель. Возвращает "" при успешном старте или текст ошибки.
 func (a *App) Connect(s Settings) string {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	a.SaveSettings(s)
 	deviceID, err := loadOrCreateDeviceID()
 	if err != nil {
 		return err.Error()
 	}
 	a.mu.Lock()
-	if a.connected {
+	if a.connected || a.updating || a.closing {
 		a.mu.Unlock()
-		return "уже подключено"
+		return "подключение недоступно: VPN активен, приложение обновляется или закрывается"
+	}
+	if a.done != nil {
+		select {
+		case <-a.done:
+		default:
+			a.mu.Unlock()
+			return "предыдущее подключение ещё завершается"
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "csqtt"), a.emitLog, nil)
@@ -158,14 +172,20 @@ func (a *App) Connect(s Settings) string {
 		// Пользователь мог отключиться, пока шло подключение: процессы уже
 		// убиты, статус "disconnected" отправлен — не перетирать его.
 		a.mu.Lock()
-		current := a.mgr == mgr
+		current := a.mgr == mgr && a.connected
 		a.mu.Unlock()
 		if !current {
 			return
 		}
 		if err != nil {
 			a.emitLog("Ошибка: " + err.Error())
-			a.stop(false) // ждать саму себя нельзя — отсюда без ожидания
+			mgr.Disconnect()
+			a.mu.Lock()
+			if a.mgr == mgr {
+				a.connected = false
+			}
+			a.mu.Unlock()
+			a.emitStatus("disconnected")
 			return
 		}
 		if mgr.SysActive() {
@@ -179,24 +199,28 @@ func (a *App) Connect(s Settings) string {
 
 // Disconnect останавливает туннель и откатывает маршруты. Снятие маршрутов
 // занимает секунды — на это время фронту уходит статус "disconnecting".
-func (a *App) Disconnect() { a.stop(true) }
+func (a *App) Disconnect() {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	a.stop()
+}
 
-// stop гасит туннель. При wait=true сначала дожидается завершения горутины
+// stop гасит туннель. Сначала дожидается завершения горутины
 // Connect и только потом откатывает: иначе она продолжает поднимать TUN,
 // DNS-прокси, NRPT-правило и split-маршруты уже ПОСЛЕ отката, и система остаётся
-// без сети и без DNS при статусе «Отключено». Из самой горутины вызывается с
-// wait=false — ждать саму себя было бы взаимной блокировкой.
-func (a *App) stop(wait bool) {
+// без сети и без DNS при статусе «Отключено». Ссылка на manager/done сохраняется:
+// updater не должен потерять незавершённый Connect после timeout Disconnect.
+func (a *App) stop() {
 	a.mu.Lock()
 	mgr, cancel, done := a.mgr, a.cancel, a.done
-	a.mgr, a.cancel, a.done, a.connected = nil, nil, nil, false
+	a.connected = false
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	if mgr != nil {
 		a.emitStatus("disconnecting")
-		if wait && done != nil {
+		if done != nil {
 			select {
 			case <-done:
 			case <-time.After(stopTimeout):
@@ -214,7 +238,12 @@ func (a *App) stop(wait bool) {
 // Windows продолжает резолвить всё через уже удалённый TUN IP, и DNS
 // перестаёт работать во всей системе.
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.IsConnected() {
+	a.mu.Lock()
+	a.closing = true
+	needsStop := a.mgr != nil
+	a.mu.Unlock()
+	a.CancelUpdate()
+	if needsStop {
 		a.Disconnect()
 	}
 	return false
@@ -235,7 +264,7 @@ func (a *App) onTunnelDown(mgr *core.Manager) {
 		a.mu.Unlock()
 		return
 	}
-	a.mgr, a.cancel, a.done, a.connected = nil, nil, nil, false
+	a.connected = false
 	a.mu.Unlock()
 	a.emitStatus("disconnected")
 }

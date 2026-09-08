@@ -319,3 +319,11 @@ body[data-state="connected"] .metrics {
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+.update-box { margin-bottom: 16px; padding: 12px; border: 1px solid #343b4b; border-radius: 8px; }
+.update-box p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+#updateNotes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; font-size: 12px; }
+#updateProgress { width: 100%; }
+
+.update-box [hidden] { display: none; }
+.update-box button:disabled { opacity: .5; cursor: wait; }

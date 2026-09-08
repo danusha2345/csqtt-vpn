@@ -1,6 +1,7 @@
 package main
 
 import (
+	"csqtt-vpn/updater"
 	"embed"
 
 	"github.com/wailsapp/wails/v2"
@@ -13,6 +14,9 @@ import (
 var assets embed.FS
 
 func main() {
+	if updater.RunHelper() {
+		return
+	}
 	app := NewApp()
 
 	err := wails.Run(&options.App{

@@ -269,7 +269,7 @@ func (m *Manager) setBypassRoute(network, mask, gw string) error {
 	defer m.routeMu.Unlock()
 	key := network + " mask " + mask
 	m.mu.Lock()
-	if m.routes[key] {
+	if m.shuttingDown || m.routes[key] {
 		m.mu.Unlock()
 		return nil
 	}
@@ -488,12 +488,18 @@ func (m *Manager) addBypassHost(ip string) error {
 func (m *Manager) stopSystemRouting() {
 	removeManagedNRPT()
 	m.stopDNS()
+	m.routeMu.Lock()
 	m.mu.Lock()
+	for route := range m.routes {
+		m.cleanupRoutes = append(m.cleanupRoutes, route)
+	}
+	if m.physIf != "" {
+		m.cleanupPhysIf = m.physIf
+	}
 	bridge, routes := m.bridge, m.routes
 	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
-	m.routeMu.Lock()
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"} {
 		ps := fmt.Sprintf(`Get-NetRoute -DestinationPrefix '%s' -InterfaceAlias '%s' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, prefix, tunName)
 		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)

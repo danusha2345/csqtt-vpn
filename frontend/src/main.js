@@ -382,6 +382,55 @@ window.addEventListener('DOMContentLoaded', async () => {
 	try {
 		const platform = await App().Platform();
 		$('platform').textContent = String(platform || 'desktop').toUpperCase();
+		App().UpdateReady?.();
+        initUpdater(platform);
 		if (platform === 'linux') $('autostart').closest('.toggle').hidden = true;
 	} catch (e) { /* ignore */ }
 });
+
+// Release notes остаются обычным текстом: HTML/ссылки из release не исполняются.
+async function initUpdater(platform) {
+    try {
+        const v = await App().VersionInfo();
+        $('versionInfo').textContent = `GUI ${v.desktop} · Core ${v.core}\n${v.compatibility}`;
+    } catch (e) { $('versionInfo').textContent = 'Версия недоступна'; }
+    if (platform !== 'windows') return;
+    $('updateControls').hidden = false;
+    try { $('lastUpdateResult').textContent = await App().LastUpdateResult(); } catch (e) { /* отдельный журнал необязателен */ }
+    const check = async () => {
+        $('checkUpdate').disabled = true;
+        $('installUpdate').hidden = true;
+        $('updateStatus').textContent = 'Проверка GitHub…';
+        try {
+            const c = await App().CheckForUpdate();
+            $('updateStatus').textContent = c ? `Доступна ${c.version} (GUI + core). ${c.compatibility}` : 'Установлена актуальная стабильная версия.';
+            $('updateNotes').textContent = c?.notes || '';
+            $('installUpdate').hidden = !c;
+        } catch (e) { $('updateStatus').textContent = `Проверка не выполнена: ${e}`; }
+        finally { $('checkUpdate').disabled = false; }
+    };
+    $('checkUpdate').onclick = check;
+    $('cancelUpdate').onclick = () => App().CancelUpdate();
+    rt().EventsOn('update-progress', p => {
+        $('updateProgress').value = p.total ? 100 * p.received / p.total : 0;
+        $('updateStatus').textContent = p.received >= p.total ? 'Проверка bundle, остановка VPN и перезапуск…' : `Загрузка: ${fmtBytes(p.received)} / ${fmtBytes(p.total)}`;
+        $('cancelUpdate').hidden = p.received >= p.total;
+    });
+    $('installUpdate').onclick = async () => {
+        // Нажатие этой явно подписанной кнопки — согласие на остановку VPN/установку.
+        $('installUpdate').disabled = true; $('checkUpdate').disabled = true;
+        $('updateProgress').hidden = false; $('updateProgress').value = 0;
+        $('cancelUpdate').hidden = false;
+        try {
+            if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+            await App().SaveSettings(collect());
+            await App().InstallUpdate();
+        }
+        catch (e) { $('updateStatus').textContent = `Обновление не установлено: ${e}`; }
+        finally {
+            $('installUpdate').disabled = false; $('checkUpdate').disabled = false;
+            $('cancelUpdate').hidden = true; $('updateProgress').hidden = true;
+        }
+    };
+    await check();
+}

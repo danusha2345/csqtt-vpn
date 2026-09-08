@@ -77,7 +77,12 @@ sudo -E ./CSQTT-VPN
 - от 9 до 126 workers с нормализацией до кратного 9;
 - системный TUN, DNS proxy и маршрутизация доменов/IP/CIDR напрямую;
 - журнал, диагностика, скорость и объём текущей сессии;
-- Windows autostart (на Linux скрыт до появления privilege-separated helper).
+- Windows autostart (на Linux скрыт до появления privilege-separated helper);
+- проверка обновлений нашего GitHub release, загрузка с progress и установка
+  полного Windows bundle через helper с rollback после явного выбора в UI.
+
+Контракт assets, восстановление и обязательный Windows release gate:
+[docs/WINDOWS_UPDATER.md](docs/WINDOWS_UPDATER.md).
 
 ## Сборка
 

@@ -109,6 +109,18 @@
 
     <section class="pane" id="settings" role="tabpanel" aria-labelledby="tabSettings">
         <div class="pane-body pane-split">
+        <div class="update-box wide">
+            <p id="versionInfo">Чтение версии…</p>
+            <div id="updateControls" hidden>
+                <p id="lastUpdateResult" role="status"></p>
+                <button class="ghost-btn" id="checkUpdate" type="button">Проверить обновления</button>
+                <p id="updateStatus" role="status" aria-live="polite"></p>
+                <pre id="updateNotes"></pre>
+                <progress id="updateProgress" max="100" value="0" hidden></progress>
+                <button class="ghost-btn" id="installUpdate" type="button" hidden>Скачать, установить и перезапустить</button>
+                <button class="ghost-btn" id="cancelUpdate" type="button" hidden>Отменить загрузку</button>
+            </div>
+        </div>
             <div class="col">
                 <div class="row">
                     <label class="field small">

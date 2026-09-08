@@ -58,22 +58,24 @@ type Manager struct {
 	binDir string
 	runDir string
 
-	mu           sync.Mutex
-	routeMu      sync.Mutex
-	client       *exec.Cmd
-	clientIn     io.WriteCloser
-	bridge       bridgeController
-	routes       map[string]bool
-	turnIPs      map[string]bool
-	tunUDS       string
-	physGW       string
-	physIf       string
-	sysActive    bool
-	dns          *dnsProxy
-	shuttingDown bool
-	onLog        func(string)
-	onCaptcha    CaptchaFunc
-	onDown       func()
+	mu            sync.Mutex
+	routeMu       sync.Mutex
+	client        *exec.Cmd
+	clientIn      io.WriteCloser
+	bridge        bridgeController
+	routes        map[string]bool
+	turnIPs       map[string]bool
+	tunUDS        string
+	physGW        string
+	physIf        string
+	sysActive     bool
+	dns           *dnsProxy
+	shuttingDown  bool
+	cleanupRoutes []string
+	cleanupPhysIf string
+	onLog         func(string)
+	onCaptcha     CaptchaFunc
+	onDown        func()
 
 	configCh chan tunnelConfig
 	readyCh  chan struct{}
