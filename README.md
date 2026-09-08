@@ -123,6 +123,12 @@ cargo zigbuild --release --locked --target x86_64-unknown-linux-musl
 
 ## Ограничения проверки
 
+В текущих исходниках исправлены применение DNS из `TUNCONF`, TCP fallback
+при усечённом DNS-ответе и обработка ошибок Windows IPv6 guard: ошибка теперь
+прерывает подключение с откатом. Эти изменения ещё не включены в опубликованный
+bundle. Для SOCKS5-исправлений transport требуется новая сборка Rust core из
+соседнего `android-server`; файлы `bin/` не обновляются изменением Go-кода.
+
 Unit/race/cross-compile, frontend audit/build, Wintun PE build, Linux TUN namespace
 и SCM_RIGHTS проверяются локально. Полный TURN e2e требует действующей VK call
 link/hash; секреты в тесты и репозиторий не включаются.

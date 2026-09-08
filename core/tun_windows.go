@@ -396,9 +396,15 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 			return fmt.Errorf("split route %s: %v: %s", prefix, e, out)
 		}
 	}
-	for _, prefix := range []string{"::/1", "8000::/1"} {
-		ps := fmt.Sprintf(`New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null`, prefix, tunIndex)
-		_, _ = runHidden("powershell", "-NoProfile", "-Command", ps)
+	if err := installIPv6Guard(func(prefix string) error {
+		ps := fmt.Sprintf(`$ErrorActionPreference = 'Stop'; New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '::' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null`, prefix, tunIndex)
+		if out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", ps); err != nil {
+			return fmt.Errorf("IPv6 leak guard %s: %w: %s", prefix, err, out)
+		}
+		return nil
+	}); err != nil {
+		m.routeMu.Unlock()
+		return err
 	}
 	m.routeMu.Unlock()
 	m.log("✓ Системные маршруты направлены в CSQTT")
@@ -407,7 +413,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 	if bypassUpstream != "" {
 		bypassUpstream += ":53"
 	}
-	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream); err != nil {
+	if err := m.startDNS(assigned.IP+":53", domains, bypassUpstream, assigned.DNS); err != nil {
 		return err
 	}
 	if out, e := runHidden("netsh", "interface", "ipv4", "set", "dnsservers", "name="+tunName, "static", assigned.IP, "primary"); e != nil {

@@ -231,7 +231,7 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		return err
 	}
 	bypassDNS := linuxPhysicalDNS(physical.Dev)
-	if err := m.startDNS(assigned.IP+":53", domains, bypassDNS); err != nil {
+	if err := m.startDNS(assigned.IP+":53", domains, bypassDNS, assigned.DNS); err != nil {
 		return err
 	}
 	for _, args := range [][]string{

@@ -1,10 +1,66 @@
 package core
 
 import (
+	"github.com/miekg/dns"
 	"net"
 	"reflect"
 	"testing"
 )
+
+func TestServerDNSIsUsedAndInvalidAddressRejected(t *testing.T) {
+	m := NewManager("", "", nil, nil)
+	if err := m.startDNS("127.0.0.1:0", nil, "", "192.168.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	defer m.stopDNS()
+	if m.dns.vpnUp != "192.168.1.1:53" {
+		t.Fatalf("server DNS ignored: %s", m.dns.vpnUp)
+	}
+	if err := m.startDNS("127.0.0.1:0", nil, "", "not-an-ip"); err == nil {
+		t.Fatal("invalid server DNS accepted")
+	}
+}
+
+func TestDNSRetriesTruncatedUDPOverTCP(t *testing.T) {
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	udp, err := net.ListenPacket("udp", tcp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		if _, ok := w.RemoteAddr().(*net.UDPAddr); ok {
+			answer.Truncated = true
+		} else {
+			answer.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.42")}}
+		}
+		_ = w.WriteMsg(answer)
+	})
+	readyUDP, readyTCP := make(chan struct{}), make(chan struct{})
+	u := &dns.Server{PacketConn: udp, Handler: handler, NotifyStartedFunc: func() { close(readyUDP) }}
+	v := &dns.Server{Listener: tcp, Handler: handler, NotifyStartedFunc: func() { close(readyTCP) }}
+	go u.ActivateAndServe()
+	go v.ActivateAndServe()
+	<-readyUDP
+	<-readyTCP
+	defer u.Shutdown()
+	defer v.Shutdown()
+	request := new(dns.Msg)
+	request.SetQuestion("large.example.", dns.TypeA)
+	answer, err := exchangeDNS(request, tcp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Truncated || len(answer.Answer) != 1 || answer.Answer[0].(*dns.A).A.String() != "192.0.2.42" {
+		t.Fatalf("incomplete DNS answer: %v", answer)
+	}
+}
 
 func TestNormalizeDomainsExpandsYandexFamily(t *testing.T) {
 	got := normalizeDomains([]string{"ya.ru", "YA.RU.", "example.com"})

@@ -41,6 +41,15 @@ type tunnelConfig struct {
 	DNS string
 }
 
+func installIPv6Guard(apply func(string) error) error {
+	for _, prefix := range []string{"::/1", "8000::/1"} {
+		if err := apply(prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type bridgeController interface {
 	Close() error
 }

@@ -18,7 +18,6 @@ import (
 // туннеля ДО того, как приложение подключится. Остальное резолвится через VPN.
 const (
 	dnsBypassFallback = "77.88.8.8:53" // Yandex (в bypassCIDRs → мимо VPN), если физ. DNS неизвестен
-	dnsVPNUpstream    = "1.1.1.1:53"   // через туннель
 	dnsCacheMin       = 10 * time.Second
 	dnsCacheMax       = 300 * time.Second
 )
@@ -51,6 +50,7 @@ type dnsCacheEntry struct {
 
 type dnsProxy struct {
 	mgr      *Manager
+	vpnUp    string
 	excludes []string // суффиксы доменов для обхода
 	bypassUp string   // upstream для bypass-доменов (физ./провайдерский DNS — правильная геолокация CDN)
 	udp      *dns.Server
@@ -65,9 +65,13 @@ type dnsProxy struct {
 // Бинд СИНХРОННЫЙ с ретраями — IP TUN-адаптера может ещё применяться
 // (EADDRNOTAVAIL). Возвращает ошибку, если поднять не удалось, чтобы вызывающий
 // код не вешал DNS адаптера на мёртвый прокси.
-func (m *Manager) startDNS(listenAddr string, domains []string, bypassUpstream string) error {
+func (m *Manager) startDNS(listenAddr string, domains []string, bypassUpstream, vpnDNS string) error {
+	if ip := net.ParseIP(vpnDNS); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("некорректный DNS сервера: %q", vpnDNS)
+	}
 	p := &dnsProxy{
 		mgr:      m,
+		vpnUp:    net.JoinHostPort(vpnDNS, "53"),
 		excludes: normalizeDomains(domains),
 		bypassUp: bypassUpstream,
 		cache:    map[string]dnsCacheEntry{},
@@ -156,7 +160,7 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	upstream := dnsVPNUpstream
+	upstream := p.vpnUp
 	if bypass {
 		upstream = p.bypassUp // физ./провайдерский DNS → CDN отдаёт близкие узлы
 		if upstream == "" {
@@ -164,7 +168,7 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
-	resp, err := dns.Exchange(r, upstream)
+	resp, err := exchangeDNS(r, upstream)
 	if err != nil || resp == nil {
 		dns.HandleFailed(w, r)
 		return
@@ -183,6 +187,18 @@ func (p *dnsProxy) handle(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	p.cachePut(key, resp)
 	_ = w.WriteMsg(resp)
+}
+
+// An upstream UDP answer may be truncated, including when the caller used TCP.
+// Complete it before caching or returning it to the application.
+func exchangeDNS(request *dns.Msg, upstream string) (*dns.Msg, error) {
+	client := &dns.Client{Net: "udp", Timeout: 5 * time.Second}
+	response, _, err := client.Exchange(request, upstream)
+	if err == nil && response != nil && response.Truncated {
+		client.Net = "tcp"
+		response, _, err = client.Exchange(request, upstream)
+	}
+	return response, err
 }
 
 // cacheGet возвращает копию закэшированного ответа (или nil, если нет/протух).
