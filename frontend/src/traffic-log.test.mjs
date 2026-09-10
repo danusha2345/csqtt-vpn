@@ -54,8 +54,15 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
         document: { getElementById: (id) => elements[id], createElement: () => ({}) },
         window: { addEventListener() {} }, setTimeout: () => 1 });
     const source = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
-        .replace(/^import .*;\n/gm, '').replaceAll('import.meta.env.DEV', 'false');
+        .replace(/^import .*;\r?\n/gm, '').replaceAll('import.meta.env.DEV', 'false');
     runInContext(source, context);
+    // Windows checkout uses CRLF; imports must be removed in both formats.
+    const crlf = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
+        .replace(/\r?\n/g, '\r\n')
+        .replace(/^import .*;\r?\n/gm, '').replaceAll('import.meta.env.DEV', 'false');
+    runInContext(crlf, createContext({ replaceTrafficLogLine,
+        document: { getElementById: (id) => elements[id], createElement: () => ({}) },
+        window: { addEventListener() {} }, setTimeout: () => 1 }));
     runInContext(`appendLog(${JSON.stringify(stats(1))}); renderLog();`, context);
     const original = children[0];
     runInContext(`appendLog('Ошибка тестовая'); appendLog(${JSON.stringify(stats(2))}); renderLog();`, context);
