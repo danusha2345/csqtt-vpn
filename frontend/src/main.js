@@ -1,4 +1,5 @@
 import './style.css';
+import { replaceTrafficLogLine } from './traffic-log.mjs';
 
 const $ = (id) => document.getElementById(id);
 const previewEvents = new Map();
@@ -231,7 +232,9 @@ function scheduleRender() {
 
 function appendLog(line) {
     const last = logLines[logLines.length - 1];
-    if (last && last.line === line) { // дедупликация повторов
+    if (replaceTrafficLogLine(logLines, line)) {
+        // Сводка обновляет существующий DOM-узел даже между обычными сообщениями.
+    } else if (last && last.line === line) { // дедупликация повторов
         last.count++;
         last.dirty = true;
     } else {
