@@ -1,0 +1,22 @@
+{
+  "baselineSource": "b6d578ef56f6cf0ffc3388f731be9e62e30aa7bd",
+  "baselineExeSHA256": "c4d76fea820910939534dc981745d20f47b0d29bac6101d6f013b0d1e17c9d9a",
+  "partialNativeExeSHA256": "946a5c467faff6ee7e980083c3f75be05dba727d1267c59dfc85a113dc04f431",
+  "winipcfg": "golang.zx2c4.com/wireguard/windows v1.0.1",
+  "workers": 27,
+  "coldWindowsReboots": false,
+  "dnsProbe": "example.com A via assigned TUN DNS listener; 5-second timeout",
+  "httpsProbe": "https://1.1.1.1/cdn-cgi/trace bound to assigned TUN IPv4; 8-second timeout",
+  "fullNativeCandidateAccepted": false,
+  "partialNativeCandidateReleaseReady": false,
+  "files": {
+    "native-initial.jsonl": "fa34379e2c0d5ca68ef7107e03905847c23cef45538d3b9bc8045e9b52a7735e",
+    "summary.json": "82bea2a07c3d15cbce783932de57774389f3263cc9add5ae15acc04701fa7ce6",
+    "native-full-api.jsonl": "25949ecec6ff038a9dc6bb583911e40859a16f7c7e1319de67fb9e165d095e5c",
+    "native-partial-series.jsonl": "997a0329cba6a8cd43227797b4cf8e52a2c93ae3982b9f58ccc1cfb597cd0a15",
+    "baseline.jsonl": "213e01fcf0ebff3beb39b3716c3ccbd13907a17e36720bc576c987225b42c4c2",
+    "api-comparison.json": "a73013cf39236ed47a7759cd8a4f7eafb201dd3bce731e9643da0c32165650af",
+    "native-partial-start.jsonl": "51e7257a089af189cb3487b3a4630762719408ac0a65e77b78d5b25764515a60",
+    "native-partial-smoke.jsonl": "9a3049e8f742265edeb7b0fa84581ab128a5d36911c3ecbe693ce9ccccc8f600"
+  }
+}

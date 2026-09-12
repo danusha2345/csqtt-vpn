@@ -1,0 +1,59 @@
+{
+  "routing_seconds": {
+    "n": 20,
+    "median": 7.29702475,
+    "p95": 7.6086002
+  },
+  "dns_seconds": {
+    "n": 20,
+    "median": 7.54265835,
+    "p95": 7.8277552
+  },
+  "https_seconds": {
+    "n": 20,
+    "median": 8.208543550000002,
+    "p95": 8.5047449
+  },
+  "cleanup_seconds": {
+    "n": 20,
+    "median": 6.6203764,
+    "p95": 6.9367864
+  },
+  "windows_setup_seconds": {
+    "n": 20,
+    "median": 5.516477850000001,
+    "p95": 5.851692099999999
+  },
+  "api_seconds": {
+    "legacy_dns": {
+      "n": 20,
+      "median": 0.2832959,
+      "p95": 0.2946883
+    },
+    "legacy_gateway": {
+      "n": 20,
+      "median": 0.3444296,
+      "p95": 0.3602327
+    },
+    "legacy_route_pair": {
+      "n": 20,
+      "median": 0.02952775,
+      "p95": 0.0329576
+    },
+    "native_dns": {
+      "n": 20,
+      "median": 0.0036026,
+      "p95": 0.0041255
+    },
+    "native_gateway": {
+      "n": 20,
+      "median": 0.0,
+      "p95": 0
+    },
+    "native_route_pair": {
+      "n": 20,
+      "median": 0.0,
+      "p95": 0.0005205
+    }
+  }
+}
