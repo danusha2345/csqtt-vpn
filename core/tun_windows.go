@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -231,25 +232,6 @@ Clear-DnsClientCache -ErrorAction SilentlyContinue
 	return nil
 }
 
-func physDefault(ctx context.Context) (gw, ifIndex string, err error) {
-	ps := `$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object {$_.NextHop -ne '0.0.0.0'} | Sort-Object RouteMetric | Select-Object -First 1; "$($r.NextHop) $($r.InterfaceIndex)"`
-	out, e := runHiddenContext(ctx, "powershell", "-NoProfile", "-Command", ps)
-	if e != nil {
-		return "", "", fmt.Errorf("Get-NetRoute: %v: %s", e, out)
-	}
-	fields := strings.Fields(strings.TrimSpace(out))
-	if len(fields) < 2 {
-		return "", "", fmt.Errorf("не разобран физический default route: %q", out)
-	}
-	return fields[0], fields[1], nil
-}
-
-func physDNS(ctx context.Context, ifIndex string) string {
-	ps := fmt.Sprintf(`(Get-DnsClientServerAddress -InterfaceIndex %s -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Select-Object -First 1`, ifIndex)
-	out, _ := runHiddenContext(ctx, "powershell", "-NoProfile", "-Command", ps)
-	return strings.TrimSpace(out)
-}
-
 func cidrToRoute(cidr string) (string, string, error) {
 	ip, network, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {
@@ -268,17 +250,25 @@ func (m *Manager) setBypassRoute(ctx context.Context, network, mask, gw string) 
 		m.mu.Unlock()
 		return nil
 	}
+	index := m.physIf
 	m.mu.Unlock()
-	out, err := runHiddenContext(ctx, "route", "add", network, "mask", mask, gw, "metric", "1")
+	prefix, err := nativeRoutePrefix(network, mask)
 	if err != nil {
-		if routeAlreadyExists(out) {
-			return nil
-		}
-		return fmt.Errorf("route add: %w: %s", err, strings.TrimSpace(out))
+		return err
 	}
-	m.mu.Lock()
-	m.routes[key] = true
-	m.mu.Unlock()
+	gateway, err := netip.ParseAddr(gw)
+	if err != nil {
+		return err
+	}
+	created, err := nativeAddRoute(ctx, index, prefix, gateway)
+	if created {
+		m.mu.Lock()
+		m.routes[key] = true
+		m.mu.Unlock()
+	}
+	if err != nil {
+		return fmt.Errorf("route add: %w", err)
+	}
 	return nil
 }
 
@@ -440,11 +430,12 @@ func (m *Manager) waitAdapter(ctx context.Context, name string, timeout time.Dur
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
-		out, err := runHiddenContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
-			fmt.Sprintf("(Get-NetAdapter -Name %s -ErrorAction SilentlyContinue).ifIndex", psQuote(name)))
-		index := strings.TrimSpace(out)
-		if n, parseErr := strconv.ParseUint(index, 10, 32); err == nil && parseErr == nil && n > 0 {
-			return index, nil
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		iface, err := net.InterfaceByName(name)
+		if err == nil && iface.Index > 0 {
+			return strconv.Itoa(iface.Index), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -489,13 +480,19 @@ func (m *Manager) stopSystemRouting() {
 		m.cleanupPhysIf = m.physIf
 	}
 	bridge, routes := m.bridge, m.routes
+	physIndex, gateway := m.physIf, m.physGW
 	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false
 	m.physGW, m.physIf = "", ""
 	m.mu.Unlock()
 	for route := range routes {
 		parts := strings.SplitN(route, " mask ", 2)
 		if len(parts) == 2 {
-			_, _ = runHidden("route", "delete", parts[0], "mask", parts[1])
+			prefix, e := nativeRoutePrefix(parts[0], parts[1])
+			luid, le := nativeLUID(physIndex)
+			hop, he := netip.ParseAddr(gateway)
+			if e == nil && le == nil && he == nil {
+				_ = luid.DeleteRoute(prefix, hop)
+			}
 		}
 	}
 	m.routeMu.Unlock()
