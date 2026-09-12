@@ -244,6 +244,8 @@ body[data-state="connected"] .metrics {
 /* переключатель: чекбокс визуально скрыт, но остаётся в порядке табуляции —
    display:none отбирал у «Системного VPN» и «Автозапуска» доступ с клавиатуры */
 .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+/* На Linux автозапуск скрыт: display:flex иначе перекрывает HTML hidden. */
+.toggle[hidden] { display: none; }
 .toggle input {
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
     overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
