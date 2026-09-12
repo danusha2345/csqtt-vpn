@@ -38,7 +38,6 @@
         <div class="dock-info">
             <div class="status" id="status" role="status">Отключено</div>
             <div class="status-sub" id="statusSub">нажми, чтобы подключиться</div>
-            <div class="log-tail" id="logTail" aria-hidden="true"></div>
         </div>
         <div class="metrics" id="metrics">
             <div class="metric">
@@ -54,6 +53,7 @@
                 <span class="metric-value" id="totals">↓ 0 Б · ↑ 0 Б</span>
             </div>
         </div>
+        <div class="log-tail" id="logTail" aria-hidden="true"></div>
     </section>
 
     <nav class="tabs" role="tablist" aria-label="Разделы">
@@ -168,6 +168,7 @@
                     <span>автоскролл</span>
                 </label>
             </div>
+            <div class="log-traffic" id="logTraffic" aria-label="Текущая статистика трафика"></div>
             <pre class="log" id="log"></pre>
         </div>
     </section>

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { replaceTrafficLogLine } from './traffic-log.mjs';
+import { isTrafficSummary, replaceTrafficLogLine } from './traffic-log.mjs';
 
 const stats = (n) => `[client] [СТАТИСТИКА] Активных: 18 | Трафик: ${n}.00 МБ`;
 
@@ -48,9 +48,14 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
         removeChild(el) { children.splice(children.indexOf(el), 1); },
         scrollHeight: 100, scrollTop: 0,
     };
-    const elements = { log, logPanel: { classList: { contains: () => true } },
+    const trafficChildren = [];
+    const logTraffic = {
+        appendChild(el) { trafficChildren.push(el); el.parentNode = this; },
+        removeChild(el) { trafficChildren.splice(trafficChildren.indexOf(el), 1); },
+    };
+    const elements = { log, logTraffic, logPanel: { classList: { contains: () => true } },
         logFollow: { checked: true }, logTail: { textContent: '' } };
-    const context = createContext({ replaceTrafficLogLine,
+    const context = createContext({ isTrafficSummary, replaceTrafficLogLine,
         document: { getElementById: (id) => elements[id], createElement: () => ({}) },
         window: { addEventListener() {} }, setTimeout: () => 1 });
     const source = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
@@ -60,14 +65,17 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
     const crlf = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
         .replace(/\r?\n/g, '\r\n')
         .replace(/^import .*;\r?\n/gm, '').replaceAll('import.meta.env.DEV', 'false');
-    runInContext(crlf, createContext({ replaceTrafficLogLine,
+    runInContext(crlf, createContext({ isTrafficSummary, replaceTrafficLogLine,
         document: { getElementById: (id) => elements[id], createElement: () => ({}) },
         window: { addEventListener() {} }, setTimeout: () => 1 }));
     runInContext(`appendLog(${JSON.stringify(stats(1))}); renderLog();`, context);
-    const original = children[0];
+    const original = trafficChildren[0];
     runInContext(`appendLog('Ошибка тестовая'); appendLog(${JSON.stringify(stats(2))}); renderLog();`, context);
-    assert.equal(children.length, 2);
-    assert.equal(children[0], original);
+    assert.equal(children.length, 1);
+    assert.equal(trafficChildren.length, 1);
+    assert.equal(trafficChildren[0], original);
     assert.equal(original.textContent, stats(2));
-    assert.equal(children[1].textContent, 'Ошибка тестовая');
+    assert.equal(children[0].textContent, 'Ошибка тестовая');
+    // Копирование по-прежнему включает актуальную сводку и историю.
+    assert.equal(runInContext('logLines.map(lineText).join("\\n")', context), stats(2) + '\nОшибка тестовая');
 });

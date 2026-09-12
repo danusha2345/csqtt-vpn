@@ -9,7 +9,7 @@ Android-клиент и сервер нашей сборки: [`danusha2345/csqt
 Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle: **2.1.13**, bundled Rust core: **2.1.11**. Каждый пользователь
+Версия desktop bundle: **2.1.14**, bundled Rust core: **2.1.11**. Каждый пользователь
 вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура
@@ -76,7 +76,9 @@ sudo -E ./CSQTT-VPN
 - `audio`/`video` obfuscation и TURN `UDP`/`TCP-TLS`;
 - от 9 до 126 workers с нормализацией до кратного 9;
 - системный TUN, DNS proxy и маршрутизация доменов/IP/CIDR напрямую;
-- журнал, диагностика, скорость и объём текущей сессии;
+- журнал, диагностика, скорость и объём текущей сессии; сводка трафика
+  закреплена над историей журнала и обновляется без добавления новых строк,
+  длинный текст в верхней панели переносится целиком;
 - Windows autostart (на Linux скрыт до появления privilege-separated helper);
 - проверка обновлений нашего GitHub release, загрузка с progress и установка
   полного Windows bundle через helper с rollback после явного выбора в UI.

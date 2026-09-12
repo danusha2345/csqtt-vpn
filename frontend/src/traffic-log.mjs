@@ -1,6 +1,10 @@
 // Обновляем только сводку трафика: сетевые ошибки остаются в истории журнала.
 const trafficSummary = /^(?:\[client\]\s*)?\[(?:СТАТИСТИКА|СЕТЬ)\]\s*Активных:\s*\d+\s*\|\s*Трафик:/;
 
+export function isTrafficSummary(line) {
+    return trafficSummary.test(line);
+}
+
 export function replaceTrafficLogLine(entries, line) {
     if (!trafficSummary.test(line)) return false;
     const entry = entries.find((item) => trafficSummary.test(item.line));

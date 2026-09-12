@@ -112,10 +112,11 @@ body[data-state="connecting"] .dock::before, body[data-state="connecting"] .dock
 /* Хвост журнала: видно, что происходит, не переключаясь на вкладку «Журнал». */
 .log-tail {
     font-family: var(--mono); font-size: 10.5px; color: var(--text-mute);
-    margin-top: 4px; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap;
+    grid-column: 1 / -1; justify-self: stretch; max-width: 100%;
+    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5;
 }
 .log-tail:empty { display: none; }
+body[data-state="off"] .log-tail { padding: 0 12px; }
 
 /* Подключено: док схлопывается в горизонтальную приборную полосу. */
 body[data-state="connected"] .dock,
@@ -281,6 +282,13 @@ body[data-state="connected"] .metrics {
 .follow input { accent-color: var(--accent-2); }
 
 #logPanel .pane-body { overflow: hidden; gap: 8px; }
+.log-traffic {
+    flex: none; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
+    background: var(--surface); color: var(--accent); font-family: var(--mono);
+    font-size: 11px; line-height: 1.5; white-space: pre-wrap;
+    overflow-wrap: anywhere; user-select: text;
+}
+.log-traffic:empty { display: none; }
 .log { margin: 0; flex: 1; min-height: 0; overflow-y: auto; background: var(--bg);
     border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px;
     font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-dim);

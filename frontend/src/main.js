@@ -1,5 +1,5 @@
 import './style.css';
-import { replaceTrafficLogLine } from './traffic-log.mjs';
+import { isTrafficSummary, replaceTrafficLogLine } from './traffic-log.mjs';
 
 const $ = (id) => document.getElementById(id);
 const previewEvents = new Map();
@@ -215,7 +215,9 @@ function renderLog() {
             l.el = document.createElement('div');
             l.el.className = l.cls;
             l.el.textContent = lineText(l);
-            log.appendChild(l.el);
+            // Сводка закреплена над историей: обновления не остаются за пределами
+            // видимой области после сообщений о маршрутах или сетевых ошибках.
+            (isTrafficSummary(l.line) ? $('logTraffic') : log).appendChild(l.el);
         } else if (l.dirty) {
             l.el.textContent = lineText(l);
             l.dirty = false;
