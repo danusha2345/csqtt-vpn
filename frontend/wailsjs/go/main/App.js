@@ -30,6 +30,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function ExtractVKToken(arg1) {
+  return window['go']['main']['App']['ExtractVKToken'](arg1);
+}
+
 export function GetAutoStart() {
   return window['go']['main']['App']['GetAutoStart']();
 }
@@ -56,6 +60,10 @@ export function LoadProfile(arg1) {
 
 export function LoadSettings() {
   return window['go']['main']['App']['LoadSettings']();
+}
+
+export function OpenVKAuth() {
+  return window['go']['main']['App']['OpenVKAuth']();
 }
 
 export function Platform() {

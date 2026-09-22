@@ -17,6 +17,8 @@ export function Diagnose():Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function ExtractVKToken(arg1:string):Promise<string>;
+
 export function GetAutoStart():Promise<boolean>;
 
 export function InstallUpdate():Promise<void>;
@@ -30,6 +32,8 @@ export function ListProfiles():Promise<Array<string>>;
 export function LoadProfile(arg1:string):Promise<main.Settings>;
 
 export function LoadSettings():Promise<main.Settings>;
+
+export function OpenVKAuth():Promise<void>;
 
 export function Platform():Promise<string>;
 
