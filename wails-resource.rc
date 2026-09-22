@@ -2,8 +2,8 @@
 3 ICON "app.ico"
 
 1 VERSIONINFO
- FILEVERSION 2,1,15,0
- PRODUCTVERSION 2,1,15,0
+ FILEVERSION 2,1,16,0
+ PRODUCTVERSION 2,1,16,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -16,11 +16,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "danusha2345\0"
    VALUE "FileDescription", "CSQTT VPN\0"
-   VALUE "FileVersion", "2.1.15.0\0"
+   VALUE "FileVersion", "2.1.16.0\0"
    VALUE "InternalName", "CSQTT-VPN\0"
    VALUE "OriginalFilename", "CSQTT-VPN.exe\0"
    VALUE "ProductName", "CSQTT VPN\0"
-   VALUE "ProductVersion", "2.1.15\0"
+   VALUE "ProductVersion", "2.1.16\0"
   END
  END
  BLOCK "VarFileInfo"
