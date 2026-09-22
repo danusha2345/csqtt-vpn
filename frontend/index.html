@@ -95,10 +95,28 @@
                 </label>
             </div>
             <div class="col">
-                <label class="field grow">
+                <label class="field">
+                    <span>Звонки VK</span>
+                    <select id="vkHashMode">
+                        <option value="manual">Вручную (ссылки)</option>
+                        <option value="auto_api">Авто API</option>
+                        <option value="auto_js">Авто ВК</option>
+                    </select>
+                </label>
+                <label class="field grow" id="vkLinksField">
 					<span>VK-ссылки <em>(по одной на строку, до 6)</em></span>
                     <textarea id="vk" spellcheck="false" placeholder="https://vk.com/call/join/…&#10;https://vk.com/call/join/…"></textarea>
                 </label>
+                <div class="field" id="vkTokenField" hidden>
+                    <span>VK-токен <em>(или весь адрес blank.html#access_token=…)</em></span>
+                    <div class="profile-row">
+                        <input id="vkToken" type="password" autocomplete="off" spellcheck="false" placeholder="vk1.a.…"/>
+                        <button id="vkLogin" type="button" title="Войти в VK в браузере и получить токен" aria-label="Получить токен VK">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/></svg>
+                        </button>
+                    </div>
+                    <p class="hint" id="vkModeHint"></p>
+                </div>
             </div>
 			<div class="tunnel-mode wide" role="note">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.6-2.8 8-7 10-4.2-2-7-5.4-7-10V6zM9 12l2 2 4-5"/></svg>

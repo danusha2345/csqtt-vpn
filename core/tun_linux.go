@@ -124,9 +124,13 @@ func linuxPhysicalDNS(device string) string {
 }
 
 func (m *Manager) addLinuxBypass(cidr string) error {
+	// routeMu держится до записи в m.routes: иначе stopSystemRouting может снять
+	// маршруты между чтением шлюза и `ip route add`, и /32 мимо VPN останется.
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
 	m.mu.Lock()
 	gw, device := m.physGW, m.physIf
-	if m.routes[cidr] {
+	if m.routes[cidr] || device == "" {
 		m.mu.Unlock()
 		return nil
 	}
@@ -284,6 +288,8 @@ func (m *Manager) stopSystemRouting() {
 	for _, prefix := range []string{"::/1", "8000::/1"} {
 		_, _ = runIP("-6", "route", "delete", "unreachable", prefix, "metric", "1")
 	}
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
 	m.mu.Lock()
 	bridge, routes, gw, device := m.bridge, m.routes, m.physGW, m.physIf
 	m.bridge, m.routes, m.sysActive = nil, map[string]bool{}, false

@@ -76,6 +76,19 @@ func (m *Manager) startDNS(listenAddr string, domains []string, bypassUpstream, 
 		bypassUp: bypassUpstream,
 		cache:    map[string]dnsCacheEntry{},
 	}
+	// Upstream исключённых доменов сам должен идти мимо туннеля, иначе CDN
+	// геолоцирует их по серверу CSQTT. Адреса LAN и так маршрутизируются напрямую.
+	if len(p.excludes) > 0 {
+		upstream := bypassUpstream
+		if upstream == "" {
+			upstream = dnsBypassFallback
+		}
+		if host, _, err := net.SplitHostPort(upstream); err == nil {
+			if ip := net.ParseIP(host); ip != nil && ip.To4() != nil && !ip.IsPrivate() && !ip.IsLoopback() {
+				m.excludeHost(ip.String())
+			}
+		}
+	}
 	h := dns.HandlerFunc(p.handle)
 
 	var pc net.PacketConn

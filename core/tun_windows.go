@@ -344,6 +344,13 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 			}
 		} else {
 			domains = append(domains, expandBypassDomain(value)...)
+			for _, cidr := range providerBypassCIDRs(value) {
+				if network, mask, e := cidrToRoute(cidr); e == nil {
+					if err := m.setBypassRoute(ctx, network, mask, gw); err != nil {
+						return fmt.Errorf("bypass-route %s: %w", cidr, err)
+					}
+				}
+			}
 		}
 	}
 
@@ -469,7 +476,9 @@ func (m *Manager) addBypassHost(ctx context.Context, ip string) error {
 }
 
 func (m *Manager) stopSystemRouting() {
-	_, _ = runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", windowsCleanupScript("", tunName, nrptDisplayName, nrptComment))
+	if out, err := runHidden("powershell", "-NoProfile", "-NonInteractive", "-Command", windowsCleanupScript("", tunName, nrptDisplayName, nrptComment)); err != nil {
+		m.log("⚠ Очистка NRPT/маршрутов не подтверждена (%v): %s — будет повторена при следующем запуске", err, strings.TrimSpace(out))
+	}
 	m.stopDNS()
 	m.routeMu.Lock()
 	m.mu.Lock()

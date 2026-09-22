@@ -29,6 +29,8 @@ type Settings struct {
 	Excludes      string `json:"excludes"`
 	ObfsMode      string `json:"obfsMode"`
 	TurnTransport string `json:"turnTransport"`
+	VKHashMode    string `json:"vkHashMode"`
+	VKToken       string `json:"vkToken"`
 }
 
 // App — бэкенд Wails.
@@ -38,12 +40,13 @@ type App struct {
 	updating bool
 	closing  bool
 
-	lifecycle sync.Mutex
-	mu        sync.Mutex
-	mgr       *core.Manager
-	cancel    context.CancelFunc
-	connected bool
-	done      chan struct{} // закрывается, когда горутина Connect завершилась
+	lifecycle  sync.Mutex
+	mu         sync.Mutex
+	closeReady bool // VPN уже остановлен — следующий beforeClose пропускает закрытие
+	mgr        *core.Manager
+	cancel     context.CancelFunc
+	connected  bool
+	done       chan struct{} // закрывается, когда горутина Connect завершилась
 }
 
 // stopTimeout — сколько ждём завершения горутины Connect при отключении. Она
@@ -58,6 +61,13 @@ func (a *App) Platform() string { return goruntime.GOOS }
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.trafficLoop()
+	// Под lifecycle: «Подключить», нажатое во время очистки, дождётся её и не
+	// потеряет свежее NRPT-правило.
+	go func() {
+		a.lifecycle.Lock()
+		defer a.lifecycle.Unlock()
+		core.NewManager(binDir(), runDir(), a.emitLog, nil).RecoverStale(context.Background())
+	}()
 }
 
 func (a *App) emitLog(line string) { runtime.EventsEmit(a.ctx, "log", line) }
@@ -86,6 +96,7 @@ func (a *App) LoadSettings() Settings {
 	if s.TurnTransport != "tcp_tls" {
 		s.TurnTransport = "udp"
 	}
+	s.VKHashMode = core.NormalizeVKHashMode(s.VKHashMode)
 	s.SystemVPN = true
 	return s
 }
@@ -98,6 +109,8 @@ func (a *App) SaveSettings(s Settings) {
 		_ = os.WriteFile(p, data, 0o600)
 	}
 }
+
+func runDir() string { return filepath.Join(os.TempDir(), "csqtt") }
 
 func loadOrCreateDeviceID() (string, error) {
 	path := filepath.Join(filepath.Dir(configPath()), "device-id")
@@ -154,7 +167,7 @@ func (a *App) Connect(s Settings) string {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	mgr := core.NewManager(binDir(), filepath.Join(os.TempDir(), "csqtt"), a.emitLog, nil)
+	mgr := core.NewManager(binDir(), runDir(), a.emitLog, nil)
 	mgr.SetOnDown(func() { a.onTunnelDown(mgr) })
 	done := make(chan struct{})
 	a.mgr, a.cancel, a.connected, a.done = mgr, cancel, true, done
@@ -168,6 +181,8 @@ func (a *App) Connect(s Settings) string {
 			Workers: s.Workers, SystemVPN: true, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
 			TurnTransport: s.TurnTransport,
 			DeviceID:      deviceID,
+			VKHashMode:    s.VKHashMode,
+			VKToken:       s.VKToken,
 		})
 		// Пользователь мог отключиться, пока шло подключение: процессы уже
 		// убиты, статус "disconnected" отправлен — не перетирать его.
@@ -237,16 +252,36 @@ func (a *App) stop() {
 // split-маршруты и NRPT-правило, а оно живёт в реестре и переживает перезагрузку:
 // Windows продолжает резолвить всё через уже удалённый TUN IP, и DNS
 // перестаёт работать во всей системе.
+//
+// На Windows Wails вызывает beforeClose в UI-потоке, а остановка занимает до
+// десятков секунд — окно «не отвечало», и его снимали через Диспетчер задач,
+// оставляя NRPT. Поэтому закрытие откладывается, VPN гасится в фоне, а затем
+// приложение закрывается само.
 func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
+	if a.closeReady {
+		a.mu.Unlock()
+		return false
+	}
+	alreadyClosing := a.closing
 	a.closing = true
 	needsStop := a.mgr != nil
 	a.mu.Unlock()
-	a.CancelUpdate()
-	if needsStop {
-		a.Disconnect()
+	if alreadyClosing {
+		return true // остановка уже идёт, закроемся по её завершении
 	}
-	return false
+	a.CancelUpdate()
+	if !needsStop {
+		return false
+	}
+	go func() {
+		a.Disconnect()
+		a.mu.Lock()
+		a.closeReady = true
+		a.mu.Unlock()
+		runtime.Quit(a.ctx)
+	}()
+	return true
 }
 
 func (a *App) IsConnected() bool {
@@ -268,6 +303,12 @@ func (a *App) onTunnelDown(mgr *core.Manager) {
 	a.mu.Unlock()
 	a.emitStatus("disconnected")
 }
+
+// OpenVKAuth открывает в системном браузере вход VK для получения токена.
+func (a *App) OpenVKAuth() { runtime.BrowserOpenURL(a.ctx, core.VKOAuthURL) }
+
+// ExtractVKToken достаёт access_token из вставленного адреса blank.html#….
+func (a *App) ExtractVKToken(raw string) string { return core.ExtractVKToken(raw) }
 
 // Diagnose выполняет сетевую диагностику и выводит её в журнал.
 func (a *App) Diagnose() {
@@ -353,6 +394,7 @@ func (a *App) LoadProfile(name string) Settings {
 	if s.Workers <= 0 {
 		s.Workers = 18
 	}
+	s.VKHashMode = core.NormalizeVKHashMode(s.VKHashMode)
 	return s
 }
 

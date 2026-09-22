@@ -7,13 +7,15 @@ const previewRuntime = { EventsOn: (name, callback) => previewEvents.set(name, c
 const previewSettings = {
 	server: '', password: '', vkLinks: '', workers: 18,
     systemVPN: true, excludes: '', obfsMode: 'video', turnTransport: 'udp',
+    vkHashMode: 'manual', vkToken: '',
 };
 const previewApp = {
     LoadSettings: async () => previewSettings,
     SaveSettings: async (settings) => Object.assign(previewSettings, settings),
     ListProfiles: async () => [], GetAutoStart: async () => false,
     SetAutoStart: async () => {}, CheckVPN: async () => [], Diagnose: async () => {},
-    Platform: async () => 'preview',
+    Platform: async () => 'preview', IsConnected: async () => false,
+    OpenVKAuth: async () => {}, ExtractVKToken: async (raw) => raw.trim(),
     Connect: async () => {
         setTimeout(() => previewEvents.get('status')?.('connected-vpn'), 700);
         return '';
@@ -60,7 +62,26 @@ function collect() {
         excludes: $('excludes').value,
         obfsMode: $('obfsMode').value === 'video' ? 'video' : 'audio',
         turnTransport: $('turnTransport').value === 'tcp_tls' ? 'tcp_tls' : 'udp',
+        vkHashMode: normalizeVKHashMode($('vkHashMode').value),
+        vkToken: $('vkToken').value.trim(),
     };
+}
+
+const VK_HASH_MODES = ['manual', 'auto_api', 'auto_js'];
+function normalizeVKHashMode(v) { return VK_HASH_MODES.includes(v) ? v : 'manual'; }
+
+const VK_MODE_HINTS = {
+    auto_api: 'Создаёт звонки через официальный calls.start и завершает их при отключении.',
+    auto_js: '⚠ Неофициальные браузерные методы VK: блокировку аккаунта исключить нельзя — лучше второстепенный аккаунт. Включайте, когда «Авто API» не работает.',
+};
+
+// Ссылки нужны только ручному режиму, токен — автоматическим.
+function syncVKMode() {
+    const mode = normalizeVKHashMode($('vkHashMode').value);
+    $('vkLinksField').hidden = mode !== 'manual';
+    $('vkTokenField').hidden = mode === 'manual';
+    $('vkModeHint').textContent = VK_MODE_HINTS[mode] || '';
+    $('vkModeHint').classList.toggle('warn', mode === 'auto_js');
 }
 
 function setFields(s) {
@@ -71,6 +92,9 @@ function setFields(s) {
     $('excludes').value = s.excludes || '';
     $('obfsMode').value = s.obfsMode === 'video' ? 'video' : 'audio';
     $('turnTransport').value = s.turnTransport === 'tcp_tls' ? 'tcp_tls' : 'udp';
+    $('vkHashMode').value = normalizeVKHashMode(s.vkHashMode);
+    $('vkToken').value = s.vkToken || '';
+    syncVKMode();
 }
 
 // Настройки писались на каждое нажатие клавиши: один вызов в Go и одна запись
@@ -292,6 +316,16 @@ function wire() {
     $('workers').addEventListener('change', () => { $('workers').value = normalizeWorkers($('workers').value); save(); });
     $('obfsMode').addEventListener('change', save);
     $('turnTransport').addEventListener('change', save);
+    $('vkHashMode').addEventListener('change', () => { syncVKMode(); save(); });
+    $('vkToken').addEventListener('input', save);
+    // Вставили адрес blank.html#access_token=… — оставляем в поле только токен.
+    $('vkToken').addEventListener('change', async () => {
+        try { $('vkToken').value = await App().ExtractVKToken($('vkToken').value); save(); } catch (e) { /* ignore */ }
+    });
+    $('vkLogin').addEventListener('click', () => {
+        App().OpenVKAuth();
+        appendLog('Откройте вход VK в браузере, разрешите доступ и вставьте адрес страницы blank.html в поле токена.');
+    });
 
     // профили
     $('profileSel').addEventListener('change', async (e) => {
@@ -301,7 +335,7 @@ function wire() {
             const s = await App().LoadProfile(name);
             // Go возвращает пустые настройки и когда файл не прочитался: применить
             // их — значит затереть текущие и тут же сохранить пустоту.
-            if (!s || (!s.server && !s.password && !s.vkLinks)) {
+            if (!s || (!s.server && !s.password && !s.vkLinks && !s.vkToken)) {
                 appendLog('Профиль не прочитан или пуст: ' + name);
                 return;
             }
@@ -350,9 +384,11 @@ function wire() {
             const err = await App().Connect(c);
             if (err) {
                 appendLog('Ошибка: ' + err);
-                // «уже подключено» означает, что туннель жив: сбрасывать GUI в
-                // «Отключено» нельзя — кнопка перестанет отключать.
-                if (!/уже подключено/i.test(String(err))) setState('disconnected');
+                // Отказ бывает и при живом туннеле (VPN уже активен): сбрасывать GUI
+                // в «Отключено» нельзя — кнопка перестанет отключать. Спрашиваем бэкенд.
+                let alive = false;
+                try { alive = await App().IsConnected(); } catch (e) { /* считаем отключённым */ }
+                setState(alive ? 'connected-vpn' : 'disconnected');
             }
         } catch (e) {
             appendLog('Ошибка: ' + e); setState('disconnected');

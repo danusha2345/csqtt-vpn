@@ -40,3 +40,18 @@ func TestLoadOrCreateDeviceIDIsStableAndPrivate(t *testing.T) {
 		t.Fatalf("mode=%#o", info.Mode().Perm())
 	}
 }
+
+func TestBeforeCloseDefersOnlyWhileStopping(t *testing.T) {
+	idle := &App{}
+	if idle.beforeClose(nil) {
+		t.Fatal("без VPN окно должно закрываться сразу")
+	}
+	stopping := &App{closing: true}
+	if !stopping.beforeClose(nil) {
+		t.Fatal("повторное закрытие во время остановки должно ждать её")
+	}
+	stopped := &App{closing: true, closeReady: true}
+	if stopped.beforeClose(nil) {
+		t.Fatal("после остановки окно должно закрываться")
+	}
+}

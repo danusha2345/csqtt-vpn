@@ -4,6 +4,7 @@ package core
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,9 @@ import (
 const (
 	innerListen = "127.0.0.1:19000"
 	configWait  = 90 * time.Second
+	// clientStopWait — сколько ждём штатного выхода ядра по STOP. В «Авто ВК» за
+	// это время ядро само завершает звонок; после — kill.
+	clientStopWait = 10 * time.Second
 )
 
 type Config struct {
@@ -32,6 +36,8 @@ type Config struct {
 	ObfsMode      string
 	TurnTransport string
 	DeviceID      string
+	VKHashMode    string // manual | auto_api | auto_js
+	VKToken       string
 }
 
 type CaptchaFunc func(mode, redirectURI, sessionToken string) string
@@ -64,6 +70,8 @@ type Manager struct {
 	shuttingDown  bool
 	cleanupRoutes []string
 	cleanupPhysIf string
+	hashMode      string
+	vkCalls       vkCallState
 	onLog         func(string)
 	onCaptcha     CaptchaFunc
 	onDown        func()
@@ -149,7 +157,7 @@ func resolveHost(host string) string {
 	return ""
 }
 
-func (m *Manager) preflight(cfg Config, hashes string) error {
+func (m *Manager) preflight(cfg Config, mode, token, hashes string) error {
 	if _, err := os.Stat(m.exe(platformClientName())); err != nil {
 		return fmt.Errorf("не найден %s: %w", platformClientName(), err)
 	}
@@ -162,8 +170,11 @@ func (m *Manager) preflight(cfg Config, hashes string) error {
 	if strings.TrimSpace(cfg.Password) == "" {
 		return fmt.Errorf("не указан пароль туннеля")
 	}
-	if hashes == "" {
+	if mode == VKHashManual && hashes == "" {
 		return fmt.Errorf("не указан ни один VK hash/link")
+	}
+	if mode != VKHashManual && token == "" {
+		return fmt.Errorf("не указан VK-токен для автоматического режима")
 	}
 	if strings.TrimSpace(cfg.DeviceID) == "" {
 		return fmt.Errorf("не создан локальный device ID")
@@ -172,8 +183,13 @@ func (m *Manager) preflight(cfg Config, hashes string) error {
 }
 
 func (m *Manager) Connect(ctx context.Context, cfg Config) error {
+	mode := NormalizeVKHashMode(cfg.VKHashMode)
+	token := ExtractVKToken(cfg.VKToken)
 	hashes := parseVKLinks(cfg.VKLinks)
-	if err := m.preflight(cfg, hashes); err != nil {
+	if mode != VKHashManual {
+		hashes = ""
+	}
+	if err := m.preflight(cfg, mode, token, hashes); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(m.runDir, 0o700); err != nil {
@@ -194,17 +210,38 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	m.configCh = make(chan tunnelConfig, 1)
 	m.readyCh = make(chan struct{}, 1)
 	m.turnIPs = map[string]bool{}
+	m.hashMode = mode
 	m.mu.Unlock()
+
+	authMode := "vkcalls"
+	redistribute := false
+	switch mode {
+	case VKHashAutoAPI:
+		created, err := m.startVKCalls(ctx, token, cfg.Workers)
+		if err != nil {
+			return err
+		}
+		hashes = strings.Join(created, ",")
+		redistribute = len(created) < vkCallCountForWorkers(cfg.Workers)
+	case VKHashAutoJS:
+		authMode = VKHashAutoJS
+		m.log("• «Авто ВК»: ядро создаёт звонок через аккаунт VK…")
+	}
 
 	args := []string{
 		"--peer", strings.TrimSpace(cfg.Server), "--credentials-stdin",
 		"--workers", fmt.Sprint(normalizeWorkers(cfg.Workers)),
-		"--device-id", strings.TrimSpace(cfg.DeviceID), "--vk-hash-mode", "manual",
-		"--vk-auth-mode", "vkcalls", "--captcha-mode", "auto",
+		"--device-id", strings.TrimSpace(cfg.DeviceID), "--vk-hash-mode", mode,
+		"--vk-auth-mode", authMode, "--captcha-mode", "auto",
 		"--obfs", normalizeObfsMode(cfg.ObfsMode), "--turn-transport", normalizeTurnTransport(cfg.TurnTransport),
 	}
+	if redistribute {
+		args = append(args, "--allow-hash-redistribution")
+	}
 	args = append(args, m.platformClientArgs()...)
-	cmd := exec.CommandContext(ctx, m.exe(platformClientName()), args...)
+	// Без контекста: отмена подключения идёт через Disconnect, который сначала
+	// просит ядро выйти по STOP (и завершить звонки), а убивает только по таймауту.
+	cmd := exec.Command(m.exe(platformClientName()), args...)
 	cmd.Dir = m.runDir
 	cmd.Env = append(os.Environ(), "CSQTT_EVENTS=1")
 	hideConsole(cmd)
@@ -225,7 +262,12 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("кодирование credentials: %w", err)
 	}
-	if _, err := fmt.Fprintf(stdin, "CSQTT_CREDENTIALS|%s\n", credentials); err != nil {
+	input := fmt.Sprintf("CSQTT_CREDENTIALS|%s\n", credentials)
+	if mode == VKHashAutoJS {
+		bootstrap, _ := json.Marshal(map[string]string{"token": token})
+		input += "VK_JS_BOOTSTRAP:" + base64.StdEncoding.EncodeToString(bootstrap) + "\n"
+	}
+	if _, err := io.WriteString(stdin, input); err != nil {
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("передача credentials в csqtt-client: %w", err)
 	}
@@ -323,6 +365,8 @@ func (m *Manager) handleEvent(line string) {
 		default:
 		}
 	case "STATS":
+	case "CALL_UNAVAILABLE":
+		m.log("⚠ Звонок VK завершён или недоступен — переподключитесь (в режимах «Авто» будут созданы новые звонки)")
 	default:
 		m.log("[event] %s", parts[1])
 	}
@@ -367,6 +411,7 @@ func (m *Manager) failSafeOnExit(exit <-chan struct{}) {
 			return
 		}
 		m.stopSystemRouting()
+		_ = m.finishVKCalls(true)
 		if callback != nil {
 			callback()
 		}
@@ -388,15 +433,47 @@ func (m *Manager) SendCaptchaResult(token string) {
 func (m *Manager) Disconnect() {
 	m.mu.Lock()
 	m.shuttingDown = true
-	cmd, input := m.client, m.clientIn
+	cmd, input, exit, mode := m.client, m.clientIn, m.exitCh, m.hashMode
 	m.client, m.clientIn = nil, nil
 	m.mu.Unlock()
 	m.stopSystemRouting()
+	m.stopClient(cmd, input, exit, mode, clientStopWait)
+	if err := m.finishVKCalls(true); err != nil {
+		m.log("⚠ Часть звонков VK не завершена, повторю при следующем подключении: %v", err)
+	}
+}
+
+// stopClient просит ядро выйти штатно (в «Авто ВК» — ещё и завершить звонок) и
+// убивает процесс, только если он не уложился в wait.
+func (m *Manager) stopClient(cmd *exec.Cmd, input io.WriteCloser, exit <-chan struct{}, mode string, wait time.Duration) {
 	if input != nil {
+		command := "STOP\n"
+		if mode == VKHashAutoJS {
+			command = "FINISH_VK_CALLS\n" + command
+		}
+		_, _ = io.WriteString(input, command)
 		_ = input.Close()
 	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	select {
+	case <-exit:
+	case <-time.After(wait):
+		m.log("⚠ csqtt-client не завершился за %s — останавливаю принудительно", wait)
+	}
+	_ = cmd.Process.Kill()
+}
+
+// RecoverStale снимает то, что мог оставить аварийно завершённый прошлый запуск:
+// NRPT-правило (живёт в реестре и переживает перезагрузку), IPv6 leak guard,
+// процессы ядра и незавершённые звонки «Авто API».
+func (m *Manager) RecoverStale(ctx context.Context) {
+	if isElevated() {
+		m.cleanupStale(ctx)
+	}
+	if err := m.finishVKCalls(false); err != nil {
+		m.log("⚠ Звонки VK прошлого запуска не завершены: %v", err)
 	}
 }
 
