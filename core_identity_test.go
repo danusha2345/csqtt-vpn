@@ -9,7 +9,7 @@ import (
 
 func TestBundledCoreIdentityWithoutExecutingBinary(t *testing.T) {
 	for _, name := range []string{"csqtt-client", "csqtt-client.exe"} {
-		if got := bundledCoreIdentity(filepath.Join("bin", name)); !strings.HasPrefix(got, "2.1.11 ") {
+		if got := bundledCoreIdentity(filepath.Join("bin", name)); !strings.HasPrefix(got, "2.1.15 ") {
 			t.Fatalf("%s: %s", name, got)
 		}
 	}
@@ -17,7 +17,7 @@ func TestBundledCoreIdentityWithoutExecutingBinary(t *testing.T) {
 	if err := os.WriteFile(file, []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := bundledCoreIdentity(file); strings.HasPrefix(got, "2.1.11 ") {
+	if got := bundledCoreIdentity(file); strings.HasPrefix(got, "2.1.15 ") {
 		t.Fatal("tampered binary reported as verified")
 	}
 }

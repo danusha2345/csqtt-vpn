@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -146,18 +147,22 @@ func (b *packetBridge) udpToTUN() {
 			b.fail(err)
 			return
 		}
-		if n > 0 {
-			packet := [][]byte{buf[:n]}
-			written, err := b.device.Write(packet, 0)
-			if err != nil {
-				b.fail(err)
-				return
-			}
-			if written == 1 {
-				b.traffic.down.Add(int64(n))
-			}
+		forwarded, err := forwardIPPacket(buf[:n], func(packet []byte) (int, error) {
+			return b.device.Write([][]byte{packet}, 0)
+		}, isRejectedWintunPacket)
+		if err != nil {
+			b.fail(err)
+			return
+		}
+		if forwarded {
+			b.traffic.down.Add(int64(n))
 		}
 	}
+}
+
+func isRejectedWintunPacket(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_DATA) ||
+		errors.Is(err, windows.ERROR_BAD_LENGTH)
 }
 
 func (b *packetBridge) Close() error {
