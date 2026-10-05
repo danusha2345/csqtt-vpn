@@ -367,6 +367,11 @@ func (m *Manager) startSystemRouting(ctx context.Context, serverHost, excludesCS
 		return err
 	}
 	m.log("✓ Адаптер Wintun %s создан", tunName)
+	// wireguard-go хранит MTU только у себя: без этого Windows считает MTU Wintun
+	// равным 65535 и шлёт в туннель UDP-пакеты крупнее лимита целиком.
+	if out, e := runHiddenContext(ctx, "netsh", "interface", "ipv4", "set", "subinterface", tunName, "mtu="+strconv.Itoa(tunMTU), "store=active"); e != nil {
+		m.log("⚠ MTU адаптера не задан: %v: %s", e, strings.TrimSpace(out))
+	}
 	if out, e := runHiddenContext(ctx, "netsh", "interface", "ipv4", "set", "address", "name="+tunName, "static", assigned.IP, "255.255.255.0"); e != nil {
 		return fmt.Errorf("IP адаптера: %v: %s", e, out)
 	}
