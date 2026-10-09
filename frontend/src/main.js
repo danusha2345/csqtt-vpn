@@ -441,7 +441,7 @@ async function initUpdater(platform) {
     const check = async () => {
         $('checkUpdate').disabled = true;
         $('installUpdate').hidden = true;
-        $('updateStatus').textContent = 'Проверка GitHub…';
+        $('updateStatus').textContent = 'Проверка обновлений…';
         try {
             const c = await App().CheckForUpdate();
             $('updateStatus').textContent = c ? `Доступна ${c.version} (GUI + core). ${c.compatibility}` : 'Установлена актуальная стабильная версия.';

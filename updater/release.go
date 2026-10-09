@@ -1,4 +1,4 @@
-// Package updater проверяет и устанавливает Windows bundle из нашего GitHub release.
+// Package updater проверяет и устанавливает Windows bundle из наших release mirrors.
 package updater
 
 import (
@@ -39,6 +39,7 @@ type Candidate struct {
 	Notes         string `json:"notes"`
 	Compatibility string `json:"compatibility"`
 	Archive       Asset  `json:"-"`
+	Source        string `json:"source"`
 }
 
 func Newer(next, current string) bool {
@@ -86,7 +87,7 @@ func (r Release) asset(name string, max int64) (Asset, error) {
 	return found[0], err
 }
 func allowedURL(u *url.URL) bool {
-	return u.Scheme == "https" && u.User == nil && u.Port() == "" && (u.Host == "api.github.com" || u.Host == "github.com" || u.Host == "release-assets.githubusercontent.com")
+	return u.Scheme == "https" && u.User == nil && u.Port() == "" && u.Fragment == "" && (u.Host == "api.github.com" || u.Host == "github.com" || u.Host == "release-assets.githubusercontent.com" || u.Host == "gitlab.com" || u.Host == "git.danik2files.ru")
 }
 func client() *http.Client {
 	return &http.Client{Timeout: 15 * time.Minute, CheckRedirect: func(r *http.Request, via []*http.Request) error {
@@ -113,7 +114,7 @@ func request(ctx context.Context, raw string) (*http.Response, error) {
 	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
-		return nil, fmt.Errorf("GitHub HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("источник обновлений: HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
 }
@@ -140,10 +141,15 @@ func readAsset(ctx context.Context, tag string, a Asset) ([]byte, error) {
 	}
 	return b, nil
 }
-func Check(ctx context.Context, current string) (*Candidate, error) {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	resp, e := request(ctx, "https://api.github.com/repos/"+Repository+"/releases/latest")
+func checkGitHub(ctx context.Context, current string) (*Candidate, error) {
+	return checkGitHubTag(ctx, current, "")
+}
+func checkGitHubTag(ctx context.Context, current, exact string) (*Candidate, error) {
+	endpoint := "https://api.github.com/repos/" + Repository + "/releases/latest"
+	if exact != "" {
+		endpoint = "https://api.github.com/repos/" + Repository + "/releases/tags/v" + exact
+	}
+	resp, e := request(ctx, endpoint)
 	if e != nil {
 		return nil, e
 	}
@@ -155,6 +161,9 @@ func Check(ctx context.Context, current string) (*Candidate, error) {
 	v := strings.TrimPrefix(r.Tag, "v")
 	if r.Draft || r.Prerelease || r.Tag != "v"+v || !versionPattern.MatchString(v) {
 		return nil, fmt.Errorf("релиз не является стабильным semver")
+	}
+	if exact != "" && v != exact {
+		return nil, fmt.Errorf("GitHub не подтвердил версию")
 	}
 	if !Newer(v, current) {
 		return nil, nil
@@ -186,11 +195,11 @@ func Check(ctx context.Context, current string) (*Candidate, error) {
 	if m.Version != v || m.SHA[a.Name] != hash || m.Compatibility.ServerFork != "danusha2345/csqtt-android" || m.Compatibility.Socks5 == "" {
 		return nil, fmt.Errorf("BUILDINFO: версия, checksum или совместимость не подтверждены")
 	}
-	return &Candidate{Version: v, Notes: r.Notes, Compatibility: m.Compatibility.ServerFork + ": " + m.Compatibility.Socks5, Archive: a}, nil
+	return &Candidate{Version: v, Notes: r.Notes, Compatibility: m.Compatibility.ServerFork + ": " + m.Compatibility.Socks5, Archive: a, Source: "GitHub"}, nil
 }
 
 // Download никогда не возобновляет непроверенный partial; при ошибке файл удаляется.
-func Download(ctx context.Context, c Candidate, path string, progress func(int64, int64)) (err error) {
+func downloadOne(ctx context.Context, c Candidate, path string, progress func(int64, int64)) (err error) {
 	want, e := digest(c.Archive)
 	if e != nil {
 		return e
@@ -198,7 +207,11 @@ func Download(ctx context.Context, c Candidate, path string, progress func(int64
 	if !versionPattern.MatchString(c.Version) || c.Archive.Name != "CSQTT-VPN-"+c.Version+"-windows-amd64.zip" || c.Archive.Size <= 0 || c.Archive.Size > MaxArchive {
 		return fmt.Errorf("некорректный Windows asset")
 	}
-	resp, e := request(ctx, assetURL("v"+c.Version, c.Archive.Name))
+	link := sourceAssetURL(c.Source, "v"+c.Version, c.Archive.Name)
+	if link == "" {
+		return fmt.Errorf("неизвестный источник обновления")
+	}
+	resp, e := request(ctx, link)
 	if e != nil {
 		return e
 	}

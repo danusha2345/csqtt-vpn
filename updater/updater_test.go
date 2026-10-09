@@ -79,8 +79,7 @@ func TestCheckContract(t *testing.T) {
 				case assetURL("v2.1.12", "BUILDINFO-2.1.12.json"):
 					return response(info), nil
 				default:
-					t.Fatalf("unexpected URL %s", req.URL)
-					return nil, nil
+					return nil, errors.New("mirror unavailable")
 				}
 			})
 			c, e := Check(context.Background(), "2.1.11")

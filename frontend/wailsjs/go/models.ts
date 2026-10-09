@@ -71,6 +71,7 @@ export namespace updater {
 	    version: string;
 	    notes: string;
 	    compatibility: string;
+	    source: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Candidate(source);
@@ -81,6 +82,7 @@ export namespace updater {
 	        this.version = source["version"];
 	        this.notes = source["notes"];
 	        this.compatibility = source["compatibility"];
+	        this.source = source["source"];
 	    }
 	}
 
