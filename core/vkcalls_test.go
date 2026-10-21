@@ -36,7 +36,7 @@ func TestNormalizeVKHashMode(t *testing.T) {
 }
 
 func TestVKCallCountForWorkers(t *testing.T) {
-	for workers, want := range map[int]int{9: 1, 18: 1, 27: 1, 36: 2, 54: 2, 63: 3, 126: 5, 0: 1} {
+	for workers, want := range map[int]int{9: 1, 18: 1, 27: 1, 36: 2, 54: 2, 63: 3, 100: 4, 126: 4, 0: 1} {
 		if got := vkCallCountForWorkers(workers); got != want {
 			t.Fatalf("workers=%d calls=%d want %d", workers, got, want)
 		}

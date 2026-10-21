@@ -5,11 +5,14 @@
 Репозиторий desktop-клиента: [`danusha2345/csqtt-vpn`](https://github.com/danusha2345/csqtt-vpn).
 Android-клиент и сервер нашей сборки: [`danusha2345/csqtt-android`](https://github.com/danusha2345/csqtt-android).
 
-Десктопный клиент CSQTT для Windows и Linux. GUI на Wails управляет официальным
-Rust transport из [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
+Десктопный клиент CSQTT для Windows и Linux. GUI на Wails управляет нашим
+Rust transport на основе [`amurcanov/csqtt`](https://github.com/amurcanov/csqtt),
 создаёт системный TUN и отправляет IPv4-трафик через CSQTT/VK TURN.
 
-Версия desktop bundle: **2.1.19**, bundled Rust core: **2.1.15**. Каждый пользователь
+Ветка `feature/upstream-2.5-all`: desktop bundle и bundled Rust core
+**2.5.0-dev.1**. Нужен сервер нашей одноимённой ветки с `CSQTT-WIRE-4`.
+Публикация и деплой не выполнялись; подробнее:
+[интеграция 2.5](docs/UPSTREAM_2_5_INTEGRATION.md). Каждый пользователь
 вводит endpoint собственного сервера; стандартный формат — `host:46010`.
 
 ## Архитектура

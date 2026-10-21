@@ -143,11 +143,12 @@
                 <div class="row">
                     <label class="field small">
                         <span>Воркеров</span>
-                        <input id="workers" type="number" min="9" max="126" step="9" value="18"/>
+                        <input id="workers" type="number" min="3" max="100" step="1" value="18"/>
                     </label>
                     <label class="field">
                         <span>Маскировка</span>
                         <select id="obfsMode">
+                            <option value="unified">Единая</option>
                             <option value="audio">Аудио</option>
                             <option value="video">Видео</option>
                         </select>
@@ -160,7 +161,13 @@
                         </select>
                     </label>
                 </div>
-                <p class="hint">Ядро округляет число воркеров вниз до кратного 9 (от 9 до 126).</p>
+                <p class="hint">От 3 до 100 воркеров. Для игр начните с небольшого числа потоков.</p>
+                <div class="row">
+                    <label class="field"><span>Режим SRTP</span>
+                        <select id="srtpMode"><option value="auto">Авто</option><option value="dtls">DTLS-SRTP</option><option value="wrap">WRAP-SRTP</option></select>
+                    </label>
+                    <label class="field"><span>Адреса TURN</span><input id="customTurnIPs" placeholder="Автоматически; или IP:порт через запятую"/></label>
+                </div>
                 <label class="toggle">
                     <input id="autostart" type="checkbox"/>
                     <span class="track"><span class="thumb"></span></span>

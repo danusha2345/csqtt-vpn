@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,8 @@ type Config struct {
 	Excludes      string
 	ObfsMode      string
 	TurnTransport string
+	SRTPMode      string
+	CustomTurnIPs string
 	DeviceID      string
 	VKHashMode    string // manual | auto_api | auto_js
 	VKToken       string
@@ -102,6 +105,9 @@ func (m *Manager) exe(name string) string         { return filepath.Join(m.binDi
 func (m *Manager) log(format string, args ...any) { m.onLog(fmt.Sprintf(format, args...)) }
 
 func normalizeObfsMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "unified") {
+		return "unified"
+	}
 	if strings.EqualFold(strings.TrimSpace(mode), "video") {
 		return "video"
 	}
@@ -119,14 +125,24 @@ func normalizeWorkers(value int) int {
 	if value <= 0 {
 		return 18
 	}
-	if value > 126 {
-		value = 126
+	if value < 3 {
+		return 3
 	}
-	value -= value % 9
-	if value < 9 {
-		return 9
+	if value > 100 {
+		return 100
 	}
 	return value
+}
+
+func NormalizeSRTPMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "dtls":
+		return "dtls"
+	case "wrap":
+		return "wrap"
+	default:
+		return "auto"
+	}
 }
 
 func parseVKLinks(raw string) string {
@@ -189,6 +205,10 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	if mode != VKHashManual {
 		hashes = ""
 	}
+	customIPs, err := customTurnBypassIPs(cfg.CustomTurnIPs)
+	if err != nil {
+		return err
+	}
 	if err := m.preflight(cfg, mode, token, hashes); err != nil {
 		return err
 	}
@@ -209,7 +229,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	m.exitCh = make(chan struct{})
 	m.configCh = make(chan tunnelConfig, 1)
 	m.readyCh = make(chan struct{}, 1)
-	m.turnIPs = map[string]bool{}
+	m.turnIPs = customIPs
 	m.hashMode = mode
 	m.mu.Unlock()
 
@@ -234,9 +254,13 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 		"--device-id", strings.TrimSpace(cfg.DeviceID), "--vk-hash-mode", mode,
 		"--vk-auth-mode", authMode, "--captcha-mode", "auto",
 		"--obfs", normalizeObfsMode(cfg.ObfsMode), "--turn-transport", normalizeTurnTransport(cfg.TurnTransport),
+		"--srtp-mode", NormalizeSRTPMode(cfg.SRTPMode),
 	}
 	if redistribute {
 		args = append(args, "--allow-hash-redistribution")
+	}
+	if strings.TrimSpace(cfg.CustomTurnIPs) != "" {
+		args = append(args, "--custom-turn-ips", strings.TrimSpace(cfg.CustomTurnIPs))
 	}
 	args = append(args, m.platformClientArgs()...)
 	// Без контекста: отмена подключения идёт через Disconnect, который сначала
@@ -479,3 +503,34 @@ func (m *Manager) RecoverStale(ctx context.Context) {
 
 func (m *Manager) Running() bool   { m.mu.Lock(); defer m.mu.Unlock(); return m.client != nil }
 func (m *Manager) SysActive() bool { m.mu.Lock(); defer m.mu.Unlock(); return m.sysActive }
+
+// Custom TURN endpoints must bypass the VPN before its default routes are installed.
+// The desktop bridge currently routes IPv4 only, so reject IPv6 rather than loop it.
+func customTurnBypassIPs(raw string) (map[string]bool, error) {
+	ips := map[string]bool{}
+	for _, token := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		host := token
+		if strings.Contains(token, ":") {
+			var port string
+			var err error
+			host, port, err = net.SplitHostPort(token)
+			if err != nil {
+				return nil, fmt.Errorf("неверный TURN endpoint %q", token)
+			}
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 {
+				return nil, fmt.Errorf("неверный TURN порт %q", port)
+			}
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("для desktop TURN нужен IPv4: %q", host)
+		}
+		ips[ip.To4().String()] = true
+	}
+	return ips, nil
+}

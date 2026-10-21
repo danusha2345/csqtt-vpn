@@ -9,7 +9,7 @@ func TestNormalizeSettings(t *testing.T) {
 	if got := normalizeTurnTransport("tcp"); got != "tcp_tls" {
 		t.Fatalf("transport=%q", got)
 	}
-	if got := normalizeWorkers(128); got != 126 {
+	if got := normalizeWorkers(128); got != 100 {
 		t.Fatalf("workers=%d", got)
 	}
 	if got := parseVKLinks(" a, b\nc "); got != "a,b,c" {
@@ -56,5 +56,19 @@ func TestRouteAlreadyExistsAcceptsEnglishAndRussianWindows(t *testing.T) {
 	}
 	if routeAlreadyExists("Access is denied") {
 		t.Fatal("unrelated route error accepted")
+	}
+}
+
+func TestNewCoreSettings(t *testing.T) {
+	for input, want := range map[int]int{1: 3, 3: 3, 19: 19, 100: 100, 126: 100} {
+		if got := normalizeWorkers(input); got != want {
+			t.Fatalf("workers(%d)=%d, want %d", input, got, want)
+		}
+	}
+	if normalizeObfsMode("unified") != "unified" {
+		t.Fatal("unified obfuscation missing")
+	}
+	if NormalizeSRTPMode(" DTLS ") != "dtls" || NormalizeSRTPMode("") != "auto" {
+		t.Fatal("SRTP normalization")
 	}
 }

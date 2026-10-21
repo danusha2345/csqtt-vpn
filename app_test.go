@@ -55,3 +55,19 @@ func TestBeforeCloseDefersOnlyWhileStopping(t *testing.T) {
 		t.Fatal("после остановки окно должно закрываться")
 	}
 }
+
+func TestTransportSettingsSurviveRestart(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+	app := &App{}
+	app.SaveSettings(Settings{
+		Server: "server.example:46010", Workers: 3, SystemVPN: true,
+		ObfsMode: "unified", TurnTransport: "tcp_tls", SRTPMode: "dtls",
+		CustomTurnIPs: "203.0.113.1:5349,203.0.113.2",
+	})
+	loaded := (&App{}).LoadSettings()
+	if loaded.Workers != 3 || loaded.ObfsMode != "unified" || loaded.SRTPMode != "dtls" ||
+		loaded.TurnTransport != "tcp_tls" || loaded.CustomTurnIPs != "203.0.113.1:5349,203.0.113.2" {
+		t.Fatalf("transport settings lost after restart: %+v", loaded)
+	}
+}

@@ -9,6 +9,8 @@ export namespace main {
 	    excludes: string;
 	    obfsMode: string;
 	    turnTransport: string;
+	    srtpMode: string;
+	    customTurnIPs: string;
 	    vkHashMode: string;
 	    vkToken: string;
 	
@@ -26,6 +28,8 @@ export namespace main {
 	        this.excludes = source["excludes"];
 	        this.obfsMode = source["obfsMode"];
 	        this.turnTransport = source["turnTransport"];
+	        this.srtpMode = source["srtpMode"];
+	        this.customTurnIPs = source["customTurnIPs"];
 	        this.vkHashMode = source["vkHashMode"];
 	        this.vkToken = source["vkToken"];
 	    }

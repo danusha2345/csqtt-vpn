@@ -29,6 +29,8 @@ type Settings struct {
 	Excludes      string `json:"excludes"`
 	ObfsMode      string `json:"obfsMode"`
 	TurnTransport string `json:"turnTransport"`
+	SRTPMode      string `json:"srtpMode"`
+	CustomTurnIPs string `json:"customTurnIPs"`
 	VKHashMode    string `json:"vkHashMode"`
 	VKToken       string `json:"vkToken"`
 }
@@ -83,16 +85,17 @@ func configPath() string {
 
 // LoadSettings читает сохранённые настройки.
 func (a *App) LoadSettings() Settings {
-	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
+	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "unified", TurnTransport: "udp", SRTPMode: "auto"}
 	if data, err := os.ReadFile(configPath()); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
 	if s.Workers <= 0 {
 		s.Workers = 18
 	}
-	if s.ObfsMode != "video" {
-		s.ObfsMode = "audio"
+	if s.ObfsMode != "video" && s.ObfsMode != "audio" {
+		s.ObfsMode = "unified"
 	}
+	s.SRTPMode = core.NormalizeSRTPMode(s.SRTPMode)
 	if s.TurnTransport != "tcp_tls" {
 		s.TurnTransport = "udp"
 	}
@@ -179,10 +182,10 @@ func (a *App) Connect(s Settings) string {
 		err := mgr.Connect(ctx, core.Config{
 			Server: s.Server, Password: s.Password, VKLinks: s.VKLinks,
 			Workers: s.Workers, SystemVPN: true, Excludes: s.Excludes, ObfsMode: s.ObfsMode,
-			TurnTransport: s.TurnTransport,
-			DeviceID:      deviceID,
-			VKHashMode:    s.VKHashMode,
-			VKToken:       s.VKToken,
+			TurnTransport: s.TurnTransport, SRTPMode: s.SRTPMode, CustomTurnIPs: s.CustomTurnIPs,
+			DeviceID:   deviceID,
+			VKHashMode: s.VKHashMode,
+			VKToken:    s.VKToken,
 		})
 		// Пользователь мог отключиться, пока шло подключение: процессы уже
 		// убиты, статус "disconnected" отправлен — не перетирать его.
@@ -386,7 +389,7 @@ func (a *App) SaveProfile(name string, s Settings) error {
 
 // LoadProfile загружает настройки профиля по имени.
 func (a *App) LoadProfile(name string) Settings {
-	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "video", TurnTransport: "udp"}
+	s := Settings{Workers: 18, SystemVPN: true, ObfsMode: "unified", TurnTransport: "udp", SRTPMode: "auto"}
 	data, err := os.ReadFile(filepath.Join(profilesDir(), sanitizeProfileName(name)+".json"))
 	if err == nil {
 		_ = json.Unmarshal(data, &s)

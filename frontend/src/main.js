@@ -6,7 +6,7 @@ const previewEvents = new Map();
 const previewRuntime = { EventsOn: (name, callback) => previewEvents.set(name, callback) };
 const previewSettings = {
 	server: '', password: '', vkLinks: '', workers: 18,
-    systemVPN: true, excludes: '', obfsMode: 'video', turnTransport: 'udp',
+    systemVPN: true, excludes: '', obfsMode: 'unified', turnTransport: 'udp', srtpMode: 'auto', customTurnIPs: '',
     vkHashMode: 'manual', vkToken: '',
 };
 const previewApp = {
@@ -43,13 +43,11 @@ function fmtBytes(n) {
     return f + ' Б';
 }
 
-// Ядро округляет -n вниз до кратного 9 и зажимает в [9, 126]: приводим значение
-// сразу, чтобы в поле не оставалось числа, которое втихую превратится в другое.
+// Согласовано с новым core: 3..100, без округления к кратному 9.
 function normalizeWorkers(v) {
     let n = parseInt(v, 10);
     if (!Number.isFinite(n)) n = 18;
-    n = Math.min(126, Math.max(9, n));
-    return Math.floor(n / 9) * 9;
+    return Math.min(100, Math.max(3, n));
 }
 
 function collect() {
@@ -60,7 +58,9 @@ function collect() {
         workers: normalizeWorkers($('workers').value),
         systemVPN: true,
         excludes: $('excludes').value,
-        obfsMode: $('obfsMode').value === 'video' ? 'video' : 'audio',
+        obfsMode: $('obfsMode').value,
+        srtpMode: $('srtpMode').value,
+        customTurnIPs: $('customTurnIPs').value.trim(),
         turnTransport: $('turnTransport').value === 'tcp_tls' ? 'tcp_tls' : 'udp',
         vkHashMode: normalizeVKHashMode($('vkHashMode').value),
         vkToken: $('vkToken').value.trim(),
@@ -90,7 +90,9 @@ function setFields(s) {
     $('vk').value = s.vkLinks || '';
     $('workers').value = normalizeWorkers(s.workers);
     $('excludes').value = s.excludes || '';
-    $('obfsMode').value = s.obfsMode === 'video' ? 'video' : 'audio';
+    $('obfsMode').value = ['audio', 'video', 'unified'].includes(s.obfsMode) ? s.obfsMode : 'unified';
+    $('srtpMode').value = ['wrap', 'dtls', 'auto'].includes(s.srtpMode) ? s.srtpMode : 'auto';
+    $('customTurnIPs').value = s.customTurnIPs || '';
     $('turnTransport').value = s.turnTransport === 'tcp_tls' ? 'tcp_tls' : 'udp';
     $('vkHashMode').value = normalizeVKHashMode(s.vkHashMode);
     $('vkToken').value = s.vkToken || '';
@@ -316,6 +318,8 @@ function wire() {
     $('workers').addEventListener('change', () => { $('workers').value = normalizeWorkers($('workers').value); save(); });
     $('obfsMode').addEventListener('change', save);
     $('turnTransport').addEventListener('change', save);
+    $('srtpMode').addEventListener('change', save);
+    $('customTurnIPs').addEventListener('input', save);
     $('vkHashMode').addEventListener('change', () => { syncVKMode(); save(); });
     $('vkToken').addEventListener('input', save);
     // Вставили адрес blank.html#access_token=… — оставляем в поле только токен.
