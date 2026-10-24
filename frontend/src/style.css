@@ -229,6 +229,13 @@ body[data-state="connected"] .metrics {
     font-family: var(--mono); font-size: 13px; line-height: 1.45; outline: none;
     transition: border-color .2s, box-shadow .2s; resize: none; user-select: text;
 }
+.field select {
+    -webkit-appearance: none; appearance: none; color-scheme: dark;
+    padding-right: 30px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23cbd5e1' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 11px center;
+}
+.field select option { background: var(--bg-2); color: var(--text); }
 .field.grow textarea { flex: 1; min-height: 96px; max-height: 100%; resize: none; }
 .field textarea { min-height: 76px; }
 .field input::placeholder, .field textarea::placeholder { color: var(--text-mute); }

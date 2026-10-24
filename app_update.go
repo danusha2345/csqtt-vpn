@@ -47,7 +47,7 @@ func (a *App) VersionInfo() VersionInfo {
 		name += ".exe"
 	}
 	coreVersion := bundledCoreIdentity(filepath.Join(binDir(), name))
-	return VersionInfo{desktopVersion(), coreVersion, "danusha2345/csqtt-android 2.1.11–2.1.17; CSQPX2. Upstream amurcanov/csqtt 2.1.9 несовместим."}
+	return VersionInfo{desktopVersion(), coreVersion, "Сервер danusha2345/csqtt-android ветки 2.5 с CSQTT-WIRE-4 и парольной привязкой DTLS. Линия 2.1 и upstream без этих расширений несовместимы."}
 }
 func (a *App) UpdateReady() { updater.Acknowledge(desktopVersion()) }
 func (a *App) CheckForUpdate() (*updater.Candidate, error) {

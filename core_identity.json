@@ -1,7 +1,7 @@
 {
   "version": "2.5.0-dev.1",
   "sha256": {
-    "csqtt-client": "6e4811560be2508acfa6f6e9f69268536f861e00bfb1348abb7e52db02a92d1c",
-    "csqtt-client.exe": "0443c449334c93a985c63a9d9655ef67be1dbfad91ae3c52c4bb567ac28cc372"
+    "csqtt-client": "406321cbbd925f4138f90e618523f29f7e51ea8970a42d44c6651edac7a874c7",
+    "csqtt-client.exe": "42fae8d69cac5e8287efc751b6640800b6277995799eb48c4b32401d5bbfed19"
   }
 }

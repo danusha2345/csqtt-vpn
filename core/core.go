@@ -250,7 +250,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 
 	args := []string{
 		"--peer", strings.TrimSpace(cfg.Server), "--credentials-stdin",
-		"--workers", fmt.Sprint(normalizeWorkers(cfg.Workers)),
+		"--workers", fmt.Sprint(normalizeWorkers(cfg.Workers)), "--exact-workers",
 		"--device-id", strings.TrimSpace(cfg.DeviceID), "--vk-hash-mode", mode,
 		"--vk-auth-mode", authMode, "--captcha-mode", "auto",
 		"--obfs", normalizeObfsMode(cfg.ObfsMode), "--turn-transport", normalizeTurnTransport(cfg.TurnTransport),
