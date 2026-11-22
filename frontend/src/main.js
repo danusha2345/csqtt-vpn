@@ -132,19 +132,14 @@ function syncTabs() {
 }
 
 function showPane(paneId) {
-    if (activePane() === paneId) return;
+    const previous = activePane();
+    if (previous === paneId) return;
+    if (previous === 'logPanel') savedLogTop = $('log').scrollTop;
     for (const id of Object.keys(PANES)) $(id).classList.toggle('active', id === paneId);
     syncTabs();
     if (paneId !== 'logPanel') return;
-    // У скрытого элемента scrollHeight = 0, поэтому автоскролл при рендере не
-    // срабатывал. Открыли журнал — показываем хвост, но уже после пересчёта
-    // раскладки, иначе scrollHeight ещё старый.
-    stickToBottom = true;
+    if (!$('logFollow').checked || !stickToBottom) $('log').scrollTop = savedLogTop;
     renderLog();
-    requestAnimationFrame(() => {
-        const log = $('log');
-        log.scrollTop = log.scrollHeight;
-    });
 }
 
 function activePane() {
@@ -169,6 +164,10 @@ function setState(state) {
     const status = $('status'), sub = $('statusSub');
     let p = 'off', d = 'off', title = 'Отключено', subtitle = 'нажми, чтобы подключиться';
     switch (state) {
+        case 'link-lost':
+            title = 'Связь потеряна'; subtitle = 'нажми, чтобы переподключиться'; connected = false; break;
+        case 'reconnecting':
+            p = d = 'connecting'; title = 'Связь потеряна'; subtitle = 'переподключаю VPN · клик — отмена'; connected = false; break;
         case 'connecting':
             p = d = 'connecting'; title = 'Подключение…'; subtitle = 'устанавливаю туннель · клик — отмена';
             connected = false; break;
@@ -183,14 +182,14 @@ function setState(state) {
             $('downRate').textContent = '—'; $('upRate').textContent = '—';
             $('totals').textContent = '↓ 0 Б · ↑ 0 Б';
     }
-    stateName = (state === 'connecting' || state === 'disconnecting') ? state : (connected ? 'connected' : 'off');
+    stateName = state === 'reconnecting' ? 'connecting' : (state === 'connecting' || state === 'disconnecting') ? state : (connected ? 'connected' : 'off');
     power.dataset.state = p;
     dot.dataset.state = d;
     status.textContent = title;
     sub.textContent = subtitle;
     document.body.dataset.state = (p === 'connected') ? 'connected' : (p === 'connecting' ? 'connecting' : 'off');
     power.setAttribute('aria-label',
-        stateName === 'connecting' ? 'Отменить подключение' : (connected ? 'Отключить' : 'Подключить'));
+        state === 'link-lost' ? 'Переподключить' : stateName === 'connecting' ? 'Отменить подключение' : (connected ? 'Отключить' : 'Подключить'));
 
     if (connected) {
         if (!connectedAt) connectedAt = Date.now();
@@ -226,14 +225,28 @@ function lineText(l) { return l.count > 1 ? `${l.line}  ×${l.count}` : l.line; 
 // момент отрисовки. При рендере размеры ещё не пересчитаны, и «не у нижнего края»
 // ошибочно читалось как «пользователь отлистал вверх» — журнал застревал.
 let stickToBottom = true;
+let savedLogTop = 0;
+const evictedNodes = [];
+let lastLogLine = '';
 
 // Журнал рисуется по одному узлу на строку и дописывается, а не собирается заново
 // через innerHTML: полная перерисовка сбрасывала выделение текста (а журнал у нас
 // в первую очередь копируют) и стоила 500 строк каждые 100 мс.
 function renderLog() {
+    $('logTail').textContent = lastLogLine;
     const log = $('log');
     if (!$('logPanel').classList.contains('active')) return; // скрытую панель не рисуем вовсе
     const stick = $('logFollow').checked && stickToBottom;
+    // Удаляем и добавляем строки в одной отрисовке, чтобы scroll-событие
+    // не приняло временное изменение высоты за прокрутку пользователя.
+    // Положение первой сохранившейся строки учитывает переносы длинного текста.
+    const preservePosition = !stick && evictedNodes.length > 0;
+    const anchor = preservePosition
+        ? logLines.find(row => row.el?.parentNode === log)?.el : null;
+    const oldTop = anchor?.getBoundingClientRect().top;
+    for (const node of evictedNodes) node.remove();
+    evictedNodes.length = 0;
+    const rows = document.createDocumentFragment();
     for (const l of logLines) {
         if (!l.el) {
             l.el = document.createElement('div');
@@ -241,13 +254,16 @@ function renderLog() {
             l.el.textContent = lineText(l);
             // Сводка закреплена над историей: обновления не остаются за пределами
             // видимой области после сообщений о маршрутах или сетевых ошибках.
-            (isTrafficSummary(l.line) ? $('logTraffic') : log).appendChild(l.el);
+            (isTrafficSummary(l.line) ? $('logTraffic') : rows).appendChild(l.el);
         } else if (l.dirty) {
             l.el.textContent = lineText(l);
             l.dirty = false;
         }
     }
+    if (rows.childNodes.length) log.appendChild(rows);
     if (stick) log.scrollTop = log.scrollHeight;
+    else if (anchor) log.scrollTop += anchor.getBoundingClientRect().top - oldTop;
+    else if (preservePosition) log.scrollTop = 0;
 }
 
 let renderTimer = null;
@@ -267,10 +283,10 @@ function appendLog(line) {
         logLines.push({ line, cls: classOf(line), count: 1, el: null, dirty: false });
         while (logLines.length > LOG_MAX) {
             const drop = logLines.shift();
-            if (drop.el && drop.el.parentNode) drop.el.parentNode.removeChild(drop.el);
+            if (drop.el) evictedNodes.push(drop.el);
         }
     }
-    $('logTail').textContent = line;
+    lastLogLine = line;
     scheduleRender();
 }
 
@@ -302,6 +318,18 @@ function wire() {
     // приложение хотя бы продолжит показывать статус и журнал.
     rt().EventsOn('status', setState);
     rt().EventsOn('log', appendLog);
+    rt().EventsOn('verification', (active) => {
+        $('verification').hidden = !active;
+        $('verificationMessage').textContent = '';
+    });
+    $('openVerification').addEventListener('click', async () => {
+        try {
+            const err = await App().OpenVerification();
+            $('verificationMessage').textContent = err || 'После проверки повторите подключение.';
+        } catch {
+            $('verificationMessage').textContent = 'Не удалось открыть проверку VK.';
+        }
+    });
     rt().EventsOn('traffic', updateTraffic);
 
     wirePanes();
@@ -410,6 +438,7 @@ function wire() {
     // вернулся к нижнему краю — липкость включается снова.
     $('log').addEventListener('scroll', () => {
         const log = $('log');
+        if (!$('logPanel').classList.contains('active')) return;
         stickToBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 6;
     });
 }

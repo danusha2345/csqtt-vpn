@@ -76,6 +76,9 @@ type Manager struct {
 	onCaptcha     CaptchaFunc
 	onDown        func()
 
+	OnLinkLost                 func(gateway string)
+	GatewayPreviouslyConfirmed string
+
 	configCh chan tunnelConfig
 	readyCh  chan struct{}
 	exitCh   chan struct{}
@@ -307,6 +310,7 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) error {
 	}
 	m.log("[STARTUP] routing ready: %s", time.Since(started))
 	m.failSafeOnExit(exitCh)
+	go m.watchGateway(ctx, exitCh, assigned.IP)
 	m.log("✅ CSQTT system VPN активен: %s, DNS %s", assigned.IP, assigned.DNS)
 	return nil
 }
@@ -332,11 +336,20 @@ func (m *Manager) readClient(reader io.Reader) {
 			m.mu.Unlock()
 			m.excludeHost(match[1])
 		}
-		if strings.HasPrefix(line, "CAPTCHA_SOLVE|") && m.onCaptcha != nil {
-			parts := strings.Split(strings.TrimPrefix(line, "CAPTCHA_SOLVE|"), "|")
-			if len(parts) >= 3 {
+		if strings.HasPrefix(line, "CAPTCHA_SOLVE|") {
+			parts := strings.SplitN(strings.TrimPrefix(line, "CAPTCHA_SOLVE|"), "|", 3)
+			if len(parts) == 2 {
+				parts = append([]string{"manual"}, parts...)
+			}
+			if len(parts) == 3 && m.onCaptcha != nil {
 				m.SendCaptchaResult(m.onCaptcha(parts[0], parts[1], parts[2]))
 			}
+			continue
+		}
+		if strings.Contains(line, "открыт ручной WebView") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), "session_token=") {
 			continue
 		}
 		m.log("[client] %s", line)

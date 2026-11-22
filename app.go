@@ -43,6 +43,7 @@ type App struct {
 	lifecycle  sync.Mutex
 	mu         sync.Mutex
 	closeReady bool // VPN уже остановлен — следующий beforeClose пропускает закрытие
+	challenge  verificationRequest
 	mgr        *core.Manager
 	cancel     context.CancelFunc
 	connected  bool
@@ -149,6 +150,10 @@ func (a *App) Connect(s Settings) string {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
 	a.SaveSettings(s)
+	return a.connectLocked(s, "")
+}
+
+func (a *App) connectLocked(s Settings, previousGateway string) string {
 	deviceID, err := loadOrCreateDeviceID()
 	if err != nil {
 		return err.Error()
@@ -166,14 +171,32 @@ func (a *App) Connect(s Settings) string {
 			return "предыдущее подключение ещё завершается"
 		}
 	}
+	if a.challenge.url != "" {
+		a.challenge = verificationRequest{}
+		runtime.EventsEmit(a.ctx, "verification", false)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	mgr := core.NewManager(binDir(), runDir(), a.emitLog, nil)
+	var mgr *core.Manager
+	mgr = core.NewManager(binDir(), runDir(), a.emitLog, func(mode, uri, _ string) string {
+		if mode == "manual" {
+			a.requestVerification(mgr, uri)
+		}
+		return ""
+	})
+	mgr.GatewayPreviouslyConfirmed = previousGateway
+	mgr.OnLinkLost = func(gateway string) {
+		a.recoverLostLink(mgr, s, gateway, previousGateway == "")
+	}
 	mgr.SetOnDown(func() { a.onTunnelDown(mgr) })
 	done := make(chan struct{})
 	a.mgr, a.cancel, a.connected, a.done = mgr, cancel, true, done
 	a.mu.Unlock()
 
-	a.emitStatus("connecting")
+	if previousGateway != "" {
+		a.emitStatus("reconnecting")
+	} else {
+		a.emitStatus("connecting")
+	}
 	go func() {
 		defer close(done)
 		err := mgr.Connect(ctx, core.Config{
@@ -200,7 +223,12 @@ func (a *App) Connect(s Settings) string {
 				a.connected = false
 			}
 			a.mu.Unlock()
-			a.emitStatus("disconnected")
+			a.clearVerification(mgr)
+			if previousGateway != "" {
+				a.emitStatus("link-lost")
+			} else {
+				a.emitStatus("disconnected")
+			}
 			return
 		}
 		if mgr.SysActive() {
@@ -210,6 +238,29 @@ func (a *App) Connect(s Settings) string {
 		}
 	}()
 	return ""
+}
+
+func (a *App) recoverLostLink(mgr *core.Manager, s Settings, gateway string, allowRetry bool) {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	a.mu.Lock()
+	current := a.connected && a.mgr == mgr && !a.closing && !a.updating
+	retry := allowRetry && a.challenge.url == ""
+	a.mu.Unlock()
+	if !current || !mgr.Running() {
+		return
+	}
+	a.emitLog("Связь потеряна: три проверки шлюза VPN подряд остались без ответа.")
+	a.stopTunnel(false)
+	if retry {
+		a.emitLog("Переподключаю VPN. Одна автоматическая попытка.")
+		if err := a.connectLocked(s, gateway); err == "" {
+			return
+		} else {
+			a.emitLog(err)
+		}
+	}
+	a.emitStatus("link-lost")
 }
 
 // Disconnect останавливает туннель и откатывает маршруты. Снятие маршрутов
@@ -225,11 +276,16 @@ func (a *App) Disconnect() {
 // DNS-прокси, NRPT-правило и split-маршруты уже ПОСЛЕ отката, и система остаётся
 // без сети и без DNS при статусе «Отключено». Ссылка на manager/done сохраняется:
 // updater не должен потерять незавершённый Connect после timeout Disconnect.
-func (a *App) stop() {
+func (a *App) stop() { a.stopTunnel(true) }
+
+func (a *App) stopTunnel(clearChallenge bool) {
 	a.mu.Lock()
 	mgr, cancel, done := a.mgr, a.cancel, a.done
 	a.connected = false
 	a.mu.Unlock()
+	if clearChallenge {
+		a.clearVerification(mgr)
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -301,6 +357,7 @@ func (a *App) onTunnelDown(mgr *core.Manager) {
 	}
 	a.connected = false
 	a.mu.Unlock()
+	a.clearVerification(mgr)
 	a.emitStatus("disconnected")
 }
 

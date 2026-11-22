@@ -66,6 +66,10 @@ export function OpenVKAuth() {
   return window['go']['main']['App']['OpenVKAuth']();
 }
 
+export function OpenVerification() {
+  return window['go']['main']['App']['OpenVerification']();
+}
+
 export function Platform() {
   return window['go']['main']['App']['Platform']();
 }

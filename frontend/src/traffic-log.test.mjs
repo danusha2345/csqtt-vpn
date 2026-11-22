@@ -44,7 +44,7 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
     const { createContext, runInContext } = await import('node:vm');
     const children = [];
     const log = {
-        appendChild(el) { children.push(el); el.parentNode = this; },
+        appendChild(fragment) { for (const el of fragment.childNodes) { children.push(el); el.parentNode = this; } },
         removeChild(el) { children.splice(children.indexOf(el), 1); },
         scrollHeight: 100, scrollTop: 0,
     };
@@ -56,7 +56,7 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
     const elements = { log, logTraffic, logPanel: { classList: { contains: () => true } },
         logFollow: { checked: true }, logTail: { textContent: '' } };
     const context = createContext({ isTrafficSummary, replaceTrafficLogLine,
-        document: { getElementById: (id) => elements[id], createElement: () => ({}) },
+        document: { getElementById: (id) => elements[id], createElement: () => ({ remove() { this.parentNode.removeChild(this); }, getBoundingClientRect: () => ({top: 0}) }), createDocumentFragment: () => ({ childNodes: [], appendChild(el) { this.childNodes.push(el); } }) },
         window: { addEventListener() {} }, setTimeout: () => 1 });
     const source = readFileSync(new URL('./main.js', import.meta.url), 'utf8')
         .replace(/^import .*;\r?\n/gm, '').replaceAll('import.meta.env.DEV', 'false');
@@ -78,4 +78,17 @@ test('actual appendLog/renderLog update the existing DOM row and preserve errors
     assert.equal(children[0].textContent, 'Ошибка тестовая');
     // Копирование по-прежнему включает актуальную сводку и историю.
     assert.equal(runInContext('logLines.map(lineText).join("\\n")', context), stats(2) + '\nОшибка тестовая');
+    // При полной истории сообщение сначала меняет модель. DOM и прокрутка
+    // остаются прежними до совместной отрисовки удалений и вставок.
+    runInContext("for (let i=0;i<500;i++) appendLog('row '+i); renderLog();", context);
+    const first = children[0];
+    runInContext("stickToBottom = false; appendLog('next');", context);
+    assert.equal(children.length, 500);
+    assert.equal(children[0], first);
+    log.scrollTop = 24;
+    runInContext("renderLog()", context);
+    assert.equal(children.length, 500);
+    assert.notEqual(children[0], first);
+    assert.equal(log.scrollTop, 24);
+
 });

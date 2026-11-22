@@ -35,6 +35,8 @@ export function LoadSettings():Promise<main.Settings>;
 
 export function OpenVKAuth():Promise<void>;
 
+export function OpenVerification():Promise<string>;
+
 export function Platform():Promise<string>;
 
 export function SaveProfile(arg1:string,arg2:main.Settings):Promise<void>;
